@@ -1,0 +1,3 @@
+proxy_hosts:
+    - github.com
+    - fedoraproject.org

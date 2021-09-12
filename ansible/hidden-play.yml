@@ -1,0 +1,78 @@
+---
+
+- name: Pre-initialization on all hosts
+  hosts: all
+  become: True
+  tasks:
+    - name: Install dependencies
+      package:
+        name:
+          - "bind-utils"
+          - "net-tools"
+
+- name: Configure Bridge Server
+  hosts: bridge
+  become: True
+  vars_files:
+    - vars/proxy_hosts
+  tasks:
+    - name: Install dependencies
+      package:
+        name:
+          - "dnsmasq"
+    
+    - name: Disable firewall
+      service:
+        name: firewalld
+        enabled: False
+        state: stopped
+
+    - name: Configure DNSMasq
+      template:
+        src: templates/dnsmasq.conf.j2
+        dest: /etc/dnsmasq.conf
+      notify:
+        - "restart dnsmasq"
+
+    - name: Add local hosts
+      lineinfile:
+        path: "/etc/hosts"
+        line: "{{ hostvars[item]['ansible_facts']['default_ipv4']['address'] }} {{ item }}"
+        state: present
+      with_items: "{{ groups['all'] }}"
+
+    - name: Add proxy_hosts
+      template:
+        src: templates/dnsmasq_proxy_hosts.conf.j2
+        dest: /etc/dnsmasq.d/proxy_hosts.conf
+
+    # - name: Add proxy_hosts
+    #   lineinfile:
+    #     path: "/etc/hosts"
+
+    #     line: "{{ hostvars[inventory_hostname]['ansible_facts']['default_ipv4']['address'] }} {{ proxy_hosts }}"
+    #     state: present
+
+  handlers: 
+    - name: restart dnsmasq
+      service:
+        name: dnsmasq
+        enabled: True
+        state: restarted
+
+- name: Configure Client
+  hosts: client
+  gather_facts: True
+  become: True
+  tasks:
+    - name: Configure dns
+      nmcli:
+        conn_name: "{{ hostvars[inventory_hostname]['ansible_facts']['default_ipv4']['interface'] }}"
+        type: ethernet
+        dns4:
+          - "{{ hostvars['bridge']['ansible_facts']['default_ipv4']['address'] }}"
+        state: present
+    - name: Disable peer dns and apply changes
+      shell: |
+        nmcli con mod {{ hostvars[inventory_hostname]['ansible_facts']['default_ipv4']['interface'] }} ipv4.ignore-auto-dns yes
+        nmcli con up {{ hostvars[inventory_hostname]['ansible_facts']['default_ipv4']['interface'] }}
