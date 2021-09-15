@@ -1,0 +1,13 @@
+[Unit]
+Description=Test HTTP(S) Web Server for Hidden Bridge
+After=multi-user.target
+
+[Service]
+Type=simple
+Restart=always
+WorkingDirectory=/opt/testwebserver/files
+Environment=PYTHONPATH=/opt/testwebserver
+ExecStart=/usr/bin/python3 -m testws
+
+[Install]
+WantedBy=multi-user.target

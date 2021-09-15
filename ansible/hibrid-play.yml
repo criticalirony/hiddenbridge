@@ -1,0 +1,131 @@
+---
+
+- name: Pre-initialization on all hosts
+  hosts: all
+  become: True
+  tasks:
+    - name: Install dependencies
+      package:
+        name:
+          - "bind-utils"
+          - "net-tools"
+          - "nc"
+
+    - name: Enable EPEL
+      package:
+        name:
+          - "epel-release"
+      when: ansible_facts['distribution'] == 'CentOS'
+
+- name: Configure Bridge Server
+  hosts: bridge.lan
+  become: True
+  vars_files:
+    - ../config.yml
+  tasks:
+    - name: Install dependencies
+      package:
+        name:
+          - "dnsmasq"
+          - "tinyproxy"
+    
+    - name: Disable firewall
+      service:
+        name: firewalld
+        enabled: False
+        state: stopped
+
+    - name: Configure DNSMasq
+      template:
+        src: templates/dnsmasq.conf.j2
+        dest: /etc/dnsmasq.conf
+      notify:
+        - "restart dnsmasq"
+
+    - name: Add local hosts
+      lineinfile:
+        path: "/etc/hosts"
+        line: "{{ hostvars[item]['ansible_facts']['default_ipv4']['address'] }} {{ item }}"
+        state: present
+      with_items: "{{ groups['all'] }}"
+      notify:
+        - "restart dnsmasq"
+
+    - name: Add Proxied Hosts
+      template:
+        src: templates/dnsmasq_proxy_hosts.conf.j2
+        dest: /etc/dnsmasq.d/proxy_hosts.conf
+      notify:
+        - "restart dnsmasq"
+
+    - name: Enable tinyproxy
+      service:
+        name: tinyproxy
+        enabled: True
+        state: started
+
+    - name: Configure tinyproxy
+      block:
+        - lineinfile:
+            path: "/etc/tinyproxy/tinyproxy.conf"
+            regex: "^Allow"
+            state: absent
+        - lineinfile:
+            path: "/etc/tinyproxy/tinyproxy.conf"
+            regex: "^ConnectPort"
+            state: absent
+      notify: "restart tinyproxy"
+
+    - name: Install test web server
+      block:
+        - name: Copy webserver resources
+          copy:
+            src: "../python/testwebserver"
+            dest: "/opt"
+            mode: "ugo+rwX"
+        - name: Drop service file
+          copy: 
+            src: "/opt/testwebserver/testws.service"
+            dest: /etc/systemd/system
+            mode: "ugo+rwX"
+            remote_src: yes
+          notify: "restart systemd"
+      notify: "restart testws"
+
+  handlers: 
+    - name: restart dnsmasq
+      service:
+        name: dnsmasq
+        enabled: True
+        state: restarted
+    - name: restart tinyproxy
+      service:
+        name: tinyproxy
+        enabled: True
+        state: restarted
+    - name: restart systemd
+      shell: |
+        systemctl daemon-reload
+    - name: restart testws
+      service:
+        name: testws
+        enabled: True
+        state: restarted
+
+
+- name: Configure Client
+  hosts: client.lan, dev.lan
+  gather_facts: True
+  become: True
+  tasks:
+    - name: Configure dns
+      nmcli:
+        conn_name: "{{ hostvars[inventory_hostname]['ansible_facts']['default_ipv4']['interface'] }}"
+        type: ethernet
+        dns4:
+          - "{{ hostvars['bridge.lan']['ansible_facts']['default_ipv4']['address'] }}"
+        state: present
+    - name: Disable peer dns and apply changes
+      shell: |
+        nmcli con mod {{ hostvars[inventory_hostname]['ansible_facts']['default_ipv4']['interface'] }} ipv4.ignore-auto-dns yes
+        nmcli con up {{ hostvars[inventory_hostname]['ansible_facts']['default_ipv4']['interface'] }}

@@ -1,0 +1,12 @@
+proxy_plugins:
+    githubcom:
+      hosts: 
+        - github.com
+      ports.secure:
+        - 9000
+      ports.insecure:
+        - 9001        
+    
+proxy_server:
+    # listen.ip: "192.168.226.135"
+    listen.dev: "ens33"

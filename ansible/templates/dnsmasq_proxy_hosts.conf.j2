@@ -1,3 +1,5 @@
-{% for proxy_host in proxy_hosts %}
-address=/{{ proxy_host }}/{{ hostvars[inventory_hostname]['ansible_facts']['default_ipv4']['address'] }}
+{% for name, plugin in proxy_plugins.items() %}
+{% for host in plugin['hosts'] %}
+address=/{{ host }}/{{ hostvars[inventory_hostname]['ansible_facts']['default_ipv4']['address'] }}
+{% endfor %}
 {% endfor %}
