@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"hiddenbridge/options"
 	"hiddenbridge/server"
 	"os"
@@ -38,14 +37,12 @@ func main() {
 		log.Panic().Err(err).Msg("command line args parse failure")
 	}
 
-	fmt.Printf("Options: %+v", opts)
-
 	SetupLogging(opts.Get("v", "debug").String())
 
 	// Read plugin config
 	filename := opts.Get("config", "config.yml").String()
 
-	pSvr := server.NewServer()
+	pSvr := server.NewProxyServer()
 	pSvr.Init(filename)
 
 	wgServerStopped := sync.WaitGroup{}
@@ -57,6 +54,25 @@ func main() {
 	}()
 
 	<-pSvr.IsStarted()
+
+	// // START Explore
+	// fixedURL, err := url.Parse("http://192.168.226.134:8888")
+	// if err != nil {
+	// 	log.Panic().Err(err).Msg("failed to parse proxy url")
+	// }
+	// tr := &http.Transport{
+	// 	Proxy:           http.ProxyURL(fixedURL),
+	// 	TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	// }
+	// client := &http.Client{Transport: tr}
+	// resp, err := client.Get("https://192.168.226.134:8443")
+	// // resp, err := client.Get("http://192.168.226.134:8080")
+	// if err != nil {
+	// 	log.Panic().Err(err).Msg("failed to get url through proxy")
+	// }
+
+	// log.Debug().Msgf("Resp: %+v", resp)
+	// // END Explore
 
 	// Wait for stop signal
 	c := make(chan os.Signal, 1)

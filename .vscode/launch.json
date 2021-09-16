@@ -17,7 +17,12 @@
             "request": "launch",
             "program": "${workspaceFolder}/python/genpluginimport.py",
             "cwd": "${workspaceFolder}/python/",
-            "console": "internalConsole"
+            "console": "internalConsole",
+            "args": [
+                "../config.yml",
+                "--output",
+                "../plugin_config.go"
+            ]
         },
         {
             "name": "Go: Launch Package",

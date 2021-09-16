@@ -16,7 +16,7 @@ type GithubHandler struct {
 func init() {
 	plugins.PluginBuilder[pluginName] = func() plugins.Plugin {
 		u := GithubHandler{}
-		u.Name = pluginName
+		u.Name_ = pluginName
 		return &u
 	}
 }

@@ -1,18 +1,11 @@
 package options
 
 import (
-	"os"
 	"testing"
 	"time"
 
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
 )
-
-func SetupLogging() {
-	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr}).Level(zerolog.DebugLevel).With().Timestamp().Logger().With().Caller().Logger()
-}
 
 func TestOptionSimple(t *testing.T) {
 	o := NewOptions("testing")
@@ -50,10 +43,10 @@ func TestOptionGet(t *testing.T) {
 	require.Len(t, o.args["arg1"], 2)
 
 	arg := o.Get("arg1", "failed")
-	require.Equal(t, "foo, bar", string(arg))
+	require.Equal(t, "foo, bar", arg.String())
 
 	arg = o.Get("arg2", "failed")
-	require.Equal(t, "failed", string(arg))
+	require.Equal(t, "failed", arg.String())
 }
 
 func TestOptionGetAsList(t *testing.T) {

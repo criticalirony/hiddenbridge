@@ -9,6 +9,10 @@ import (
 	"time"
 )
 
+type CloseWriter interface {
+	CloseWrite() error
+}
+
 type PeekableConn struct {
 	r        *bufio.Reader
 	net.Conn // So that most methods are embedded
@@ -26,7 +30,7 @@ func NewPeekableConn(c net.Conn) PeekableConn {
 	}
 }
 
-func NewBufferedConnSize(c net.Conn, n int) PeekableConn {
+func NewPeekableConnSize(c net.Conn, n int) PeekableConn {
 	return PeekableConn{
 		r:    bufio.NewReaderSize(c, n),
 		Conn: c,
@@ -41,6 +45,10 @@ func (b PeekableConn) Read(p []byte) (int, error) {
 	return b.r.Read(p)
 }
 
+func (b PeekableConn) CloseWrite() error {
+	return b.Conn.(CloseWriter).CloseWrite()
+}
+
 func NewMultiReaderConn(c net.Conn, readers ...io.Reader) MultiReaderConn {
 	readers = append(readers, c)
 	return MultiReaderConn{
@@ -51,6 +59,10 @@ func NewMultiReaderConn(c net.Conn, readers ...io.Reader) MultiReaderConn {
 
 func (mr MultiReaderConn) Read(p []byte) (int, error) {
 	return mr.r.Read(p)
+}
+
+func (mr MultiReaderConn) CloseWrite() error {
+	return mr.Conn.(CloseWriter).CloseWrite()
 }
 
 type ROConn struct {

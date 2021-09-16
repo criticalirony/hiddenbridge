@@ -25,8 +25,8 @@ def process(*, config=None, output=DEFAULT_OUTPUT):
 
     import_list = set()
     # port_list = set()
-    for plugin in config['proxy_plugins']:
-        import_list.add(plugin['name'])
+    for name in config['proxy_plugins'].keys():
+        import_list.add(name)
         # port_list.update(plugin['port'])
 
     source.append('import (')

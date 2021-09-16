@@ -13,9 +13,13 @@ var (
 // Plugin interface, defines a plugin
 // All plugins must embed the BasePlugin, which also implements simple defaults for all functions
 type Plugin interface {
+	Name() string
 	Init(opts *options.Options) error
 	String() string
 	Ports(bool) []int
+	Handles(host string, port int, secure bool) bool
+	DirectRemote(host string, port int, secure bool) (string, int)
+	ProxyURL(host string, port int, secure bool) (string, error)
 }
 
 func init() {
@@ -24,26 +28,30 @@ func init() {
 
 // BasePlugin - All services must embed the BasePlugin, which also implements simple defaults for all functions
 type BasePlugin struct {
-	Name string
-	Opts *options.Options
+	Name_ string
+	Opts_ *options.Options
+}
+
+func (b *BasePlugin) Name() string {
+	return b.Name_
 }
 
 func (b *BasePlugin) Init(opts *options.Options) error {
-	b.Opts = opts
+	b.Opts_ = opts
 	return nil
 }
 
 func (b *BasePlugin) String() string {
-	return fmt.Sprintf("%s=", b.Name)
+	return fmt.Sprintf("%s=", b.Name_)
 }
 
 func (b *BasePlugin) Ports(secure bool) []int {
 	var portOpts []options.OptionValue
 
 	if secure {
-		portOpts = b.Opts.GetAsList("ports.secure", nil)
+		portOpts = b.Opts_.GetAsList("ports.secure", nil)
 	} else {
-		portOpts = b.Opts.GetAsList("ports.insecure", nil)
+		portOpts = b.Opts_.GetAsList("ports.insecure", nil)
 	}
 
 	ports := make([]int, len(portOpts))
@@ -52,4 +60,16 @@ func (b *BasePlugin) Ports(secure bool) []int {
 	}
 
 	return ports
+}
+
+func (b *BasePlugin) Handles(host string, port int, secure bool) bool {
+	return false // by default plugins don't handle anything - this gets overriden by the plugin
+}
+
+func (b *BasePlugin) DirectRemote(host string, port int, secure bool) (string, int) {
+	return host, port // by default plugins will expect a direct (non intercepted) connection
+}
+
+func (b *BasePlugin) ProxyURL(host string, port int, secure bool) (string, error) {
+	return "", nil // by default plugins will not require a proxy for their requests
 }

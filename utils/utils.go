@@ -2,7 +2,10 @@ package utils
 
 import (
 	"context"
+	"fmt"
 	"net"
+	"net/url"
+	"strings"
 
 	"golang.org/x/xerrors"
 )
@@ -42,4 +45,72 @@ func Done(ctx context.Context) bool {
 	default:
 		return false
 	}
+}
+
+func NormalizeURL(rawURL string) (*url.URL, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		// This occurs when there is no sheme and the host starts with a number; i.e. an IP address
+		if !strings.HasPrefix(rawURL, "http") {
+			if !strings.HasSuffix(rawURL, ":443") {
+				rawURL = "http://" + rawURL
+			} else {
+				rawURL = "https://" + rawURL
+			}
+
+			u, err = url.Parse(rawURL)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			return nil, err
+		}
+	}
+
+	if len(u.Scheme) == 0 && len(u.Host) == 0 && len(u.Path) > 0 {
+		// Assume no scheme and no port
+		// u.path == bob.com
+		rawURL = fmt.Sprintf("http://%s:80", rawURL)
+	} else if len(u.Scheme) > 0 && len(u.Host) == 0 {
+		// Assume no scheme (might or might not have a port!)
+		// u.scheme == bob.com
+
+		host, port, _ := net.SplitHostPort(rawURL)
+		if len(host) == 0 {
+			host = rawURL
+		}
+
+		if len(port) == 0 {
+			port = "80"
+		}
+
+		scheme := "http"
+		if port == "443" {
+			scheme = "https" // Assume if we provide port 443 but no scheme, we really do mean https
+		}
+
+		rawURL = fmt.Sprintf("%s://%s:%s", scheme, host, port)
+	} else if len(u.Scheme) > 0 && len(u.Port()) == 0 {
+		// Assume no port
+		// u.scheme == http, u.host == bob.com
+
+		port := "80"
+		if u.Scheme == "https" {
+			port = "443"
+		}
+
+		rawURL = fmt.Sprintf("%s://%s:%s", u.Scheme, u.Host, port)
+	}
+
+	u, err = url.Parse(rawURL)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(u.Scheme) == 0 || len(u.Hostname()) == 0 || len(u.Port()) == 0 {
+		err = xerrors.Errorf("malformed url %s", u.String())
+		return nil, err
+	}
+
+	return u, nil
 }

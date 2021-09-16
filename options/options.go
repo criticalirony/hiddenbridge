@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
+	"golang.org/x/xerrors"
 )
 
 type OptionValue string
@@ -15,6 +16,27 @@ type Options struct {
 	name    string
 	args    map[string][]OptionValue
 	flagSet *flag.FlagSet
+}
+
+func NewOptionValue(value interface{}) (optVal *OptionValue) {
+	var opt OptionValue
+
+	switch vt := value.(type) {
+	case int:
+		opt = OptionValue(strconv.FormatInt(int64(vt), 10))
+	case int64:
+		opt = OptionValue(strconv.FormatInt(int64(vt), 10))
+	case string:
+		opt = OptionValue(vt)
+	case time.Duration:
+		opt = OptionValue(vt.String())
+	default:
+		log.Error().Err(xerrors.Errorf("unsupported")).Msgf("unsupported type %T", value)
+		return nil
+	}
+
+	optVal = &opt
+	return
 }
 
 func NewOptions(name string) *Options {
@@ -34,32 +56,19 @@ func FromMap(name string, args map[string]interface{}) *Options {
 			log.Panic().Msgf("key: %s already found. this should not be able to happen", key)
 		}
 
-		o.args[key] = []OptionValue{}
-		oargs := o.args[key]
+		oargs := []OptionValue{}
 
-		var oValList []OptionValue
-		switch vt := value.(type) {
-		case int:
-			oargs = append(oargs, OptionValue(strconv.FormatInt(int64(vt), 10)))
-		case string:
-			oargs = append(oargs, OptionValue(vt))
-		case []interface{}:
-			oValList = make([]OptionValue, len(vt))
-			for i, valItem := range vt {
-				switch vit := valItem.(type) {
-				case int:
-					oValList[i] = OptionValue(strconv.FormatInt(int64(vit), 10))
-				case string:
-					oValList[i] = OptionValue(vit)
-				default:
-					log.Warn().Msgf("unahandled option value type: %T", vit)
-					continue
+		valueList, ok := value.([]interface{})
+		if ok {
+			for _, item := range valueList {
+				if optVal := NewOptionValue(item); optVal != nil {
+					oargs = append(oargs, *optVal)
 				}
 			}
-			oargs = append(oargs, oValList...)
-		default:
-			log.Warn().Msgf("unahandled option type: %T", vt)
-			continue
+		} else {
+			if optVal := NewOptionValue(value); optVal != nil {
+				oargs = append(oargs, *optVal)
+			}
 		}
 
 		o.args[key] = oargs
@@ -86,10 +95,10 @@ func (o *Options) CliParse(args []string) error {
 	return o.flagSet.Parse(args)
 }
 
-func (o *Options) Get(key, value string) OptionValue {
+func (o *Options) Get(key string, value interface{}) *OptionValue {
 	args, ok := o.args[key]
 	if !ok || len(args) == 0 {
-		return OptionValue(value)
+		return NewOptionValue(value)
 	}
 
 	if len(args) > 0 {
@@ -99,10 +108,10 @@ func (o *Options) Get(key, value string) OptionValue {
 			res[i] = string(v)
 		}
 
-		return OptionValue(strings.Join(res, ", "))
+		return NewOptionValue(strings.Join(res, ", "))
 	}
 
-	return args[0]
+	return &args[0]
 }
 
 func (o *Options) GetAsList(key string, value []string) []OptionValue {

@@ -5,8 +5,18 @@ proxy_plugins:
       ports.secure:
         - 9000
       ports.insecure:
-        - 9001        
-    
+        - 9001
+    fakehostcom:
+      hosts:
+        - fakehost.com
+      ports.secure:
+        - 9000
+      ports.insecure:        
+        - 9001
+      host.real: "192.168.226.134"
+      host.real.proxy: "http://192.168.226.134:8888"
+      port.real.secure: 8443
+      port.real.insecure: 8080
 proxy_server:
     # listen.ip: "192.168.226.135"
     listen.dev: "ens33"
