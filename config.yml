@@ -1,7 +1,7 @@
 proxy_plugins:
     githubcom:
       hosts: 
-        - github.com
+        - fakegithub.com
       ports.secure:
         - 9000
       ports.insecure:
@@ -13,10 +13,20 @@ proxy_plugins:
         - 9000
       ports.insecure:        
         - 9001
-      host.real: "192.168.226.134"
+      host.real.secure: "https://192.168.226.134:8443"
+      host.real.insecure: "http://192.168.226.134:8080"
       host.real.proxy: "http://192.168.226.134:8888"
-      port.real.secure: 8443
-      port.real.insecure: 8080
+    fakeredirecthostcom:
+      hosts:
+        - fakeredirecthost.com
+      ports.secure:
+        - 9000
+      ports.insecure:        
+        - 9001
+      host.redirect.secure: "https://fakehost.com:9000"
+      host.redirect.insecure: "http://fakehost.com:9001"
 proxy_server:
     # listen.ip: "192.168.226.135"
     listen.dev: "ens33"
+    ca.cert: "keys/hiddenbridgeCA.pem"
+    ca.key: "keys/hiddenbridgeCA.key"

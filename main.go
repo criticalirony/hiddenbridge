@@ -43,7 +43,9 @@ func main() {
 	filename := opts.Get("config", "config.yml").String()
 
 	pSvr := server.NewProxyServer()
-	pSvr.Init(filename)
+	if err := pSvr.Init(filename); err != nil {
+		log.Panic().Err(err).Msgf("failed to initialize %s proxy server", pSvr.Name)
+	}
 
 	wgServerStopped := sync.WaitGroup{}
 	wgServerStopped.Add(1)

@@ -3,6 +3,7 @@ package plugins
 import (
 	"fmt"
 	"hiddenbridge/options"
+	"net/url"
 )
 
 var (
@@ -16,10 +17,10 @@ type Plugin interface {
 	Name() string
 	Init(opts *options.Options) error
 	String() string
-	Ports(bool) []int
-	Handles(host string, port int, secure bool) bool
-	DirectRemote(host string, port int, secure bool) (string, int)
-	ProxyURL(host string, port int, secure bool) (string, error)
+	Ports(bool) []string
+	Handles(hostURL *url.URL) bool
+	DirectRemote(hostURL *url.URL) (*url.URL, error)
+	ProxyURL(hostURL *url.URL) (*url.URL, error)
 }
 
 func init() {
@@ -45,7 +46,7 @@ func (b *BasePlugin) String() string {
 	return fmt.Sprintf("%s=", b.Name_)
 }
 
-func (b *BasePlugin) Ports(secure bool) []int {
+func (b *BasePlugin) Ports(secure bool) []string {
 	var portOpts []options.OptionValue
 
 	if secure {
@@ -54,22 +55,22 @@ func (b *BasePlugin) Ports(secure bool) []int {
 		portOpts = b.Opts_.GetAsList("ports.insecure", nil)
 	}
 
-	ports := make([]int, len(portOpts))
+	ports := make([]string, len(portOpts))
 	for i, port := range portOpts {
-		ports[i] = port.Int()
+		ports[i] = port.String()
 	}
 
 	return ports
 }
 
-func (b *BasePlugin) Handles(host string, port int, secure bool) bool {
+func (b *BasePlugin) Handles(hostURL *url.URL) bool {
 	return false // by default plugins don't handle anything - this gets overriden by the plugin
 }
 
-func (b *BasePlugin) DirectRemote(host string, port int, secure bool) (string, int) {
-	return host, port // by default plugins will expect a direct (non intercepted) connection
+func (b *BasePlugin) DirectRemote(hostURL *url.URL) (*url.URL, error) {
+	return hostURL, nil // by default plugins will expect a direct (non intercepted) connection
 }
 
-func (b *BasePlugin) ProxyURL(host string, port int, secure bool) (string, error) {
-	return "", nil // by default plugins will not require a proxy for their requests
+func (b *BasePlugin) ProxyURL(hostURL *url.URL) (*url.URL, error) {
+	return nil, nil // by default plugins will not require a proxy for their requests
 }

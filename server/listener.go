@@ -3,11 +3,14 @@ package server
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"crypto/tls"
+	"fmt"
+	"hiddenbridge/utils"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"strconv"
 
 	"github.com/rs/zerolog/log"
 	"golang.org/x/xerrors"
@@ -15,7 +18,8 @@ import (
 
 type Listener struct {
 	inner               net.Listener
-	HandleRawConnection func(clientConn net.Conn, host string, port int, secure bool) (ok bool, err error)
+	HandleRawConnection func(clientConn net.Conn, hostURL *url.URL) (ok bool, err error)
+	GetCertificate      func(chi *tls.ClientHelloInfo) (*tls.Certificate, error)
 }
 
 func Listen(network, address string) (*Listener, error) {
@@ -39,8 +43,9 @@ func (l *Listener) Accept() (net.Conn, error) {
 
 		hdr []byte
 
-		host string
-		port int
+		hostURL *url.URL
+
+		secure = false
 	)
 
 	for {
@@ -55,11 +60,9 @@ func (l *Listener) Accept() (net.Conn, error) {
 			return nil, err
 		}
 
-		log.Debug().Msgf("Accepted Connection: %v", innerConn.LocalAddr().String())
+		log.Debug().Msgf("Accepted Connection: %s -> %s", innerConn.RemoteAddr().String(), innerConn.LocalAddr().String())
 
-		var isSecure = false
-
-		port = innerConn.LocalAddr().(*net.TCPAddr).Port
+		port := strconv.Itoa(innerConn.LocalAddr().(*net.TCPAddr).Port)
 
 		copiedBuffer := bytes.Buffer{}
 		wrappedReader := io.TeeReader(peekConn, &copiedBuffer)
@@ -73,11 +76,14 @@ func (l *Listener) Accept() (net.Conn, error) {
 				return nil, err
 			}
 
-			if host, _, err = net.SplitHostPort(clientHello.ServerName); err != nil {
-				host = clientHello.ServerName
+			hostURL, err = utils.NormalizeURL(fmt.Sprintf("%s:%s", clientHello.ServerName, port))
+			if err != nil {
+				err = xerrors.Errorf("failed to normalize url: %w", err)
+				return nil, err
 			}
 
-			isSecure = true
+			hostURL.Scheme = "https"
+			secure = true
 		} else {
 			// This is a plain text HTTP message, find the HOST header
 			req, err := http.ReadRequest(bufio.NewReader(wrappedReader))
@@ -85,29 +91,44 @@ func (l *Listener) Accept() (net.Conn, error) {
 				return nil, err
 			}
 
-			if host, _, err = net.SplitHostPort(req.Host); err != nil {
-				host = req.Host
+			hostURL, err = utils.NormalizeURL(req.Host)
+			if err != nil {
+				err = xerrors.Errorf("failed to normalize url: %w", err)
+				return nil, err
 			}
+
+			hostURL.Scheme = "http"
+			hostURL.Host = fmt.Sprintf("%s:%s", hostURL.Hostname(), port)
 		}
 
 		wrappedConn = NewMultiReaderConn(peekConn, &copiedBuffer)
 
 		if l.HandleRawConnection != nil {
-			ok, err := l.HandleRawConnection(wrappedConn, host, port, isSecure)
+			ok, err := l.HandleRawConnection(wrappedConn, hostURL)
 			if !ok && err != nil {
+				log.Error().Err(err).Msgf("failure to handle incoming connection for %s", wrappedConn.LocalAddr().String())
 				wrappedConn.Close()
-				log.Error().Err(err).Msgf("failure to handle incoming connection for %s:%d", host, port)
-			} else if ok {
+				continue
+			}
+
+			if ok {
 				if err != nil {
 					log.Panic().Err(err).Msg("unexpected error occurred")
 				}
 			} else {
+				// Raw connection was not handled, but no error this means we can pass the connection on to the http handler
+				// for mitm processing
 				break
 			}
 		} else {
 			log.Warn().Msg("no registered connection handler connection will be intercepted")
 			break
 		}
+	}
+
+	if secure {
+		// Upgrade connection to TLS
+		return upgradeConnection(wrappedConn, l.GetCertificate)
 	}
 
 	return wrappedConn, err
@@ -122,22 +143,4 @@ func (l *Listener) Close() error {
 // Addr returns the listener's network address.
 func (l *Listener) Addr() net.Addr {
 	return l.inner.Addr()
-}
-
-func ReadClientHello(b *bufio.Reader) (*tls.ClientHelloInfo, error) {
-	var hInfo tls.ClientHelloInfo
-
-	err := tls.Server(ROConn{r: b}, &tls.Config{
-		GetConfigForClient: func(chi *tls.ClientHelloInfo) (*tls.Config, error) {
-			hInfo = *chi
-			return nil, nil
-		},
-	}).HandshakeContext(context.Background())
-
-	// If hInfo's Conn field is nil, then GetConfigForClient was never called, so another error occurred
-	if hInfo.Conn == nil {
-		return nil, err
-	}
-
-	return &hInfo, nil
 }

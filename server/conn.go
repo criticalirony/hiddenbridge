@@ -4,9 +4,12 @@ package server
 
 import (
 	"bufio"
+	"crypto/tls"
 	"io"
 	"net"
 	"time"
+
+	"golang.org/x/xerrors"
 )
 
 type CloseWriter interface {
@@ -65,6 +68,9 @@ func (mr MultiReaderConn) CloseWrite() error {
 	return mr.Conn.(CloseWriter).CloseWrite()
 }
 
+// ROConn is a readonly net.Conn interface implementation
+// It provides the ability to read from the connection, but will return
+// a connection closed "error" on a write attempt.
 type ROConn struct {
 	r *bufio.Reader
 }
@@ -85,4 +91,19 @@ func connLooksLikeHTTP(buf []byte) bool {
 		return true
 	}
 	return false
+}
+
+func upgradeConnection(conn net.Conn, getCertificate func(*tls.ClientHelloInfo) (*tls.Certificate, error)) (net.Conn, error) {
+	config := &tls.Config{
+		InsecureSkipVerify: true,
+		GetCertificate:     getCertificate,
+	}
+
+	tlsServer := tls.Server(conn, config)
+	if err := tlsServer.Handshake(); err != nil {
+		err = xerrors.Errorf("tls server %s handshake with client %s failed: %w", conn.LocalAddr().String(), conn.RemoteAddr().String(), err)
+		return nil, err
+	}
+
+	return tlsServer, nil
 }

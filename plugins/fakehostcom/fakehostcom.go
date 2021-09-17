@@ -1,8 +1,13 @@
-package githubcom
+package fakehostcom
 
 import (
 	"hiddenbridge/options"
 	"hiddenbridge/plugins"
+	"hiddenbridge/utils"
+	"net/url"
+
+	"github.com/rs/zerolog/log"
+	"golang.org/x/xerrors"
 )
 
 const (
@@ -26,35 +31,51 @@ func (p *FakeHostHandler) Init(opts *options.Options) error {
 	return nil
 }
 
-func (p *FakeHostHandler) Handles(host string, port int, secure bool) bool {
+func (p *FakeHostHandler) Handles(hostURL *url.URL) bool {
 
+	secure := false
+	if hostURL.Scheme == "https" {
+		secure = true
+	}
+
+	hostPort := hostURL.Port()
 	ports := p.Ports(secure)
 
 	for _, availablePort := range ports {
-		if port == availablePort {
+		if hostPort == availablePort {
 			return true
 		}
 	}
 
+	log.Warn().Msgf("plugin %s does not support %s", pluginName, hostURL)
 	return false
 }
 
-func (p *FakeHostHandler) DirectRemote(host string, port int, secure bool) (string, int) {
+func (p *FakeHostHandler) DirectRemote(hostURL *url.URL) (*url.URL, error) {
 	var (
 		realHost string
-		realPort int
 	)
 
-	realHost = p.Opts_.Get("host.real", host).String()
-	if secure {
-		realPort = p.Opts_.Get("port.real.secure", port).Int()
-	} else {
-		realPort = p.Opts_.Get("port.real.insecure", port).Int()
+	secure := false
+	if hostURL.Scheme == "https" {
+		secure = true
 	}
 
-	return realHost, realPort // by default plugins will expect a direct (non intercepted) connection
+	if secure {
+		realHost = p.Opts_.Get("host.real.secure", hostURL.String()).String()
+	} else {
+		realHost = p.Opts_.Get("host.real.insecure", hostURL.String()).String()
+	}
+
+	realURL, err := utils.NormalizeURL(realHost)
+	if err != nil {
+		err = xerrors.Errorf("normalize url %s failure: %w", realURL)
+		return nil, err
+	}
+
+	return realURL, nil
 }
 
-func (p *FakeHostHandler) ProxyURL(host string, port int, secure bool) (string, error) {
-	return p.Opts_.Get("host.real.proxy", "").String(), nil
+func (p *FakeHostHandler) ProxyURL(hostURL *url.URL) (*url.URL, error) {
+	return utils.NormalizeURL(p.Opts_.Get("host.real.proxy", "").String())
 }

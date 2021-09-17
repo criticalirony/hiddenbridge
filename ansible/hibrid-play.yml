@@ -114,7 +114,7 @@
 
 
 - name: Configure Client
-  hosts: client.lan, dev.lan
+  hosts: all
   gather_facts: True
   become: True
   tasks:
