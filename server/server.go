@@ -19,6 +19,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"strings"
 	"sync"
@@ -48,6 +49,8 @@ type ProxyServer struct {
 
 	caCert    tls.Certificate
 	siteCerts map[string]*tls.Certificate
+
+	siteProxies map[string]*httputil.ReverseProxy
 }
 
 func init() {
@@ -57,11 +60,12 @@ func init() {
 
 func NewProxyServer() *ProxyServer {
 	return &ProxyServer{
-		Name:      "hiddenbridge",
-		Started:   make(chan struct{}),
-		wg:        sync.WaitGroup{},
-		servers:   []*http.Server{},
-		siteCerts: map[string]*tls.Certificate{},
+		Name:        "hiddenbridge",
+		Started:     make(chan struct{}),
+		wg:          sync.WaitGroup{},
+		servers:     []*http.Server{},
+		siteCerts:   map[string]*tls.Certificate{},
+		siteProxies: map[string]*httputil.ReverseProxy{},
 	}
 }
 
@@ -113,7 +117,7 @@ func (s *ProxyServer) findPlugin(hostURL *url.URL) plugins.Plugin {
 		}
 	}
 
-	if plug != nil && plug.Handles(hostURL) {
+	if plug != nil && plug.HandlesURL(hostURL) {
 		return plug
 	}
 
@@ -197,10 +201,6 @@ func (s *ProxyServer) Init(configFile string) (err error) {
 	}
 
 	s.caCert = caCert
-
-	// ctx, cancel := context.WithCancel(context.Background())
-	// s.ctx = ctx
-	// s.cancel = cancel
 	s.ctx = context.Background()
 
 	return nil
@@ -464,38 +464,116 @@ func (s *ProxyServer) GetCertificate(chi *tls.ClientHelloInfo) (*tls.Certificate
 }
 
 // ServeHTTP handles the request and returns the response to client
-func (s *ProxyServer) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
+func (s *ProxyServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	var (
-		plug        plugins.Plugin
-		origHostURL url.URL
+		plug         plugins.Plugin
+		origReqURL   *url.URL
+		curentReqURL url.URL
+		currentPlug  plugins.Plugin
 	)
 
-	hostURL, err := utils.NormalizeURL(r.Host)
+	reqURL, err := utils.URLFromRequest(req)
 	if err != nil {
-		log.Error().Err(err).Msgf("failed to get normalized url %s", r.Host)
-		http.Error(rw, xerrors.Errorf("failed to get normalized url %s: %w", r.Host, err).Error(), http.StatusInternalServerError)
+		http.Error(rw, xerrors.Errorf("%s server failed to parse request url %s: %w", s.Name, req.Host, err).Error(), http.StatusInternalServerError)
+		return
+	}
+	origReqURL = reqURL
+	curentReqURL = *origReqURL
+
+	for {
+		plug = s.findPlugin(&curentReqURL)
+		if plug == nil {
+			// No plugin, we can assume we now have the final end point
+			break
+		}
+
+		currentPlug = plug
+
+		reqURL, req, err = plug.HandleRequest(reqURL, req)
+		if err != nil {
+			http.Error(rw, xerrors.Errorf("%s server %s plugin failed to handle url %s: %w", s.Name, plug.Name(), req.Host, err).Error(), http.StatusInternalServerError)
+			return
+		}
+
+		if reqURL != nil {
+			req.Host = reqURL.Host
+		}
+
+		if reqURL == nil || *reqURL == curentReqURL {
+			// reqURL is now nil or didn't change we are now ready to process the response
+			break
+		}
+
+		curentReqURL = *reqURL
+	}
+
+	if currentPlug == nil {
+		http.Error(rw, fmt.Sprintf("%s server does not support url %s", s.Name, curentReqURL.String()), http.StatusNotFound)
 		return
 	}
 
-	origHostURL = *hostURL
-	// TODO remove
-	_ = origHostURL
-
-	for {
-
-		if r.TLS != nil {
-			hostURL.Scheme = "https"
-		} else {
-			hostURL.Scheme = "http"
-		}
-
-		plug = s.findPlugin(hostURL)
-		if plug == nil {
-			http.Error(rw, fmt.Sprintf("%s server does not support url %s", s.Name, hostURL.String()), http.StatusNotFound)
+	if reqURL != nil {
+		if *origReqURL == *reqURL {
+			err = xerrors.Errorf("recursive request")
+			log.Error().Err(err).Msgf("%s server failed to proxy url %s", s.Name, reqURL.String())
+			http.Error(rw, xerrors.Errorf("%s server failed to proxy url %s: %w", s.Name, reqURL.String(), err).Error(), http.StatusMisdirectedRequest)
 			return
 		}
-		log.Debug().Msgf("R: %+v", r)
-		rw.WriteHeader(http.StatusAccepted)
-		break
+
+		proxyURL, err := currentPlug.ProxyURL(reqURL)
+		if err != nil {
+			http.Error(rw, xerrors.Errorf("%s server %s plugin failed to check proxy url %s: %w", s.Name, plug.Name(), reqURL.String(), err).Error(), http.StatusInternalServerError)
+			return
+		}
+
+		tlsConfig := &tls.Config{}
+		if req.TLS != nil {
+			tlsConfig.InsecureSkipVerify = true
+		}
+
+		rp, ok := s.siteProxies[reqURL.String()]
+		if !ok {
+			rp = httputil.NewSingleHostReverseProxy(reqURL)
+			rp.Transport = &http.Transport{
+				Proxy:           http.ProxyURL(proxyURL),
+				TLSClientConfig: tlsConfig,
+			}
+			rp.ModifyResponse = s.ModifyResponse
+			s.siteProxies[reqURL.String()] = rp
+		}
+
+		rp.ServeHTTP(rw, req)
 	}
+
+	log.Debug().Msgf("R: %+v", req)
+	rw.WriteHeader(http.StatusAccepted)
+}
+
+func (s *ProxyServer) ModifyResponse(resp *http.Response) error {
+	req := resp.Request
+	reqURL, err := utils.URLFromRequest(req)
+	if err != nil {
+		return xerrors.Errorf("%s server failed to parse url %s: %w", s.Name, req.Host, err)
+	}
+
+	plug := s.findPlugin(reqURL)
+	if plug == nil {
+		// No plugin, so nothing to do
+		return nil
+	}
+
+	return plug.HandleResponse(reqURL, resp)
+}
+
+func (s *ProxyServer) ErrorHandler(rw http.ResponseWriter, req *http.Request, err error) {
+	reqURL, parseErr := utils.URLFromRequest(req)
+
+	if parseErr != nil {
+		log.Error().Err(parseErr).Msgf("%s server failure to parse url from req %+v during response error handling", s.Name, req)
+		http.Error(rw, xerrors.Errorf("%s server internal error during error handling of request and response processing: %w", s.Name, parseErr).Error(), http.StatusInternalServerError)
+		return
+	}
+
+	log.Error().Err(err).Msgf("%s server failure to handle proxying of request %s and processing response", s.Name, reqURL.String())
+	http.Error(rw, xerrors.Errorf("%s server failure to handle proxying of request %s and processing response: %w", s.Name, reqURL.String(), err).Error(), http.StatusInternalServerError)
 }

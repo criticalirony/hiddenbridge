@@ -4,8 +4,11 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/rs/zerolog/log"
 
 	"golang.org/x/xerrors"
 )
@@ -60,10 +63,10 @@ func NormalizeURL(rawURL string) (*url.URL, error) {
 
 			u, err = url.Parse(rawURL)
 			if err != nil {
-				return nil, err
+				return nil, xerrors.Errorf("failed to parse url %s: %s", rawURL, err)
 			}
 		} else {
-			return nil, err
+			return nil, xerrors.Errorf("failed to parse url %s: %s", rawURL, err)
 		}
 	}
 
@@ -73,8 +76,6 @@ func NormalizeURL(rawURL string) (*url.URL, error) {
 		rawURL = fmt.Sprintf("http://%s:80", rawURL)
 	} else if len(u.Scheme) > 0 && len(u.Host) == 0 {
 		// Assume no scheme (might or might not have a port!)
-		// u.scheme == bob.com
-
 		host, port, _ := net.SplitHostPort(rawURL)
 		if len(host) == 0 {
 			host = rawURL
@@ -104,13 +105,30 @@ func NormalizeURL(rawURL string) (*url.URL, error) {
 
 	u, err = url.Parse(rawURL)
 	if err != nil {
-		return nil, err
+		return nil, xerrors.Errorf("failed to parse url %s: %s", rawURL, err)
 	}
 
 	if len(u.Scheme) == 0 || len(u.Hostname()) == 0 || len(u.Port()) == 0 {
-		err = xerrors.Errorf("malformed url %s", u.String())
-		return nil, err
+		return nil, xerrors.Errorf("malformed url %s", u.String())
 	}
 
 	return u, nil
+}
+
+func URLFromRequest(req *http.Request) (*url.URL, error) {
+	reqURL, err := NormalizeURL(req.Host)
+	if err != nil {
+		log.Error().Err(err).Msgf("failed to get normalized url %s", req.Host)
+		err = xerrors.Errorf("failed to get normalized url %s: %w", req.Host, err)
+		return nil, err
+	}
+
+	if req.TLS != nil {
+		reqURL.Scheme = "https"
+		if req.Host != reqURL.Host {
+			req.Host = fmt.Sprintf("%s:443", reqURL.Hostname())
+		}
+	} // valid values for http will be set by default from NormalizeURL
+
+	return reqURL, nil
 }

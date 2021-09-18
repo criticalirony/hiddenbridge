@@ -1,8 +1,10 @@
 package fakeredirecthost
 
 import (
+	"fmt"
 	"hiddenbridge/options"
 	"hiddenbridge/plugins"
+	"net/http"
 	"net/url"
 
 	"github.com/rs/zerolog/log"
@@ -29,7 +31,7 @@ func (p *FakeRedirectHostHandler) Init(opts *options.Options) error {
 	return nil
 }
 
-func (p *FakeRedirectHostHandler) Handles(hostURL *url.URL) bool {
+func (p *FakeRedirectHostHandler) HandlesURL(hostURL *url.URL) bool {
 
 	secure := false
 	if hostURL.Scheme == "https" {
@@ -57,4 +59,12 @@ func (p *FakeRedirectHostHandler) DirectRemote(hostURL *url.URL) (*url.URL, erro
 func (p *FakeRedirectHostHandler) ProxyURL(hostURL *url.URL) (*url.URL, error) {
 	// This plugin doesn't require a proxy
 	return nil, nil
+}
+
+func (p *FakeRedirectHostHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, *http.Request, error) {
+
+	nextURL := *reqURL
+	nextURL.Host = fmt.Sprintf("%s:%s", "fakehost.com", reqURL.Port())
+
+	return &nextURL, req, nil // by default plugins will not round trip the request
 }

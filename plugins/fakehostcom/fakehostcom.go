@@ -1,10 +1,14 @@
 package fakehostcom
 
 import (
+	"bytes"
 	"hiddenbridge/options"
 	"hiddenbridge/plugins"
 	"hiddenbridge/utils"
+	"io/ioutil"
+	"net/http"
 	"net/url"
+	"strconv"
 
 	"github.com/rs/zerolog/log"
 	"golang.org/x/xerrors"
@@ -31,7 +35,7 @@ func (p *FakeHostHandler) Init(opts *options.Options) error {
 	return nil
 }
 
-func (p *FakeHostHandler) Handles(hostURL *url.URL) bool {
+func (p *FakeHostHandler) HandlesURL(hostURL *url.URL) bool {
 
 	secure := false
 	if hostURL.Scheme == "https" {
@@ -49,6 +53,10 @@ func (p *FakeHostHandler) Handles(hostURL *url.URL) bool {
 
 	log.Warn().Msgf("plugin %s does not support %s", pluginName, hostURL)
 	return false
+}
+
+func (p *FakeHostHandler) ProxyURL(hostURL *url.URL) (*url.URL, error) {
+	return utils.NormalizeURL(p.Opts_.Get("host.real.proxy", "").String())
 }
 
 func (p *FakeHostHandler) DirectRemote(hostURL *url.URL) (*url.URL, error) {
@@ -69,13 +77,29 @@ func (p *FakeHostHandler) DirectRemote(hostURL *url.URL) (*url.URL, error) {
 
 	realURL, err := utils.NormalizeURL(realHost)
 	if err != nil {
-		err = xerrors.Errorf("normalize url %s failure: %w", realURL)
+		err = xerrors.Errorf("normalize url %s failure: %w", realURL, err)
 		return nil, err
 	}
 
 	return realURL, nil
 }
 
-func (p *FakeHostHandler) ProxyURL(hostURL *url.URL) (*url.URL, error) {
-	return utils.NormalizeURL(p.Opts_.Get("host.real.proxy", "").String())
+func (p *FakeHostHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, *http.Request, error) {
+	directURL, err := p.DirectRemote(reqURL)
+	return directURL, req, err // by default plugins will not round trip the request
+}
+
+func (p *FakeHostHandler) HandleResponse(reqURL *url.URL, resp *http.Response) error {
+	// Test to check that we can change the body of a response
+	var bodyBytes []byte
+	var err error
+
+	bodyBytes, err = ioutil.ReadAll(resp.Body)
+	bodyBytes = bytes.Replace(bodyBytes, []byte("Served to you from a server far, far, away."), []byte("Served to you from a dish that's best served cold."), -1)
+
+	resp.Header.Set("content-length", strconv.Itoa(len(bodyBytes)))
+
+	//reset the response body to the original unread state
+	resp.Body = ioutil.NopCloser(bytes.NewBuffer(bodyBytes))
+	return err
 }

@@ -3,6 +3,7 @@ package plugins
 import (
 	"fmt"
 	"hiddenbridge/options"
+	"net/http"
 	"net/url"
 )
 
@@ -18,9 +19,11 @@ type Plugin interface {
 	Init(opts *options.Options) error
 	String() string
 	Ports(bool) []string
-	Handles(hostURL *url.URL) bool
+	HandlesURL(hostURL *url.URL) bool
 	DirectRemote(hostURL *url.URL) (*url.URL, error)
 	ProxyURL(hostURL *url.URL) (*url.URL, error)
+	HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, *http.Request, error)
+	HandleResponse(reqURL *url.URL, resp *http.Response) error
 }
 
 func init() {
@@ -63,7 +66,7 @@ func (b *BasePlugin) Ports(secure bool) []string {
 	return ports
 }
 
-func (b *BasePlugin) Handles(hostURL *url.URL) bool {
+func (b *BasePlugin) HandlesURL(hostURL *url.URL) bool {
 	return false // by default plugins don't handle anything - this gets overriden by the plugin
 }
 
@@ -73,4 +76,12 @@ func (b *BasePlugin) DirectRemote(hostURL *url.URL) (*url.URL, error) {
 
 func (b *BasePlugin) ProxyURL(hostURL *url.URL) (*url.URL, error) {
 	return nil, nil // by default plugins will not require a proxy for their requests
+}
+
+func (b *BasePlugin) HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, *http.Request, error) {
+	return nil, nil, nil // by default plugins will not round trip the request
+}
+
+func (b *BasePlugin) HandleResponse(reqURL *url.URL, resp *http.Response) error {
+	return nil // by default plugins will not change the response
 }
