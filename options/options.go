@@ -77,24 +77,6 @@ func FromMap(name string, args map[string]interface{}) *Options {
 	return o
 }
 
-func (o *Options) CliFlag(name, usage string) {
-	_, ok := o.args[name]
-	if ok {
-		return
-	}
-
-	o.args[name] = []OptionValue{}
-
-	o.flagSet.Func(name, usage, func(flagValue string) error {
-		o.args[name] = append(o.args[name], OptionValue(flagValue))
-		return nil
-	})
-}
-
-func (o *Options) CliParse(args []string) error {
-	return o.flagSet.Parse(args)
-}
-
 func (o *Options) Get(key string, value interface{}) *OptionValue {
 	args, ok := o.args[key]
 	if !ok || len(args) == 0 {

@@ -2,7 +2,6 @@ package server
 
 import (
 	"bufio"
-	"context"
 	"crypto/tls"
 )
 
@@ -18,7 +17,7 @@ func ReadClientHello(b *bufio.Reader) (*tls.ClientHelloInfo, error) {
 			hInfo = *chi
 			return nil, nil
 		},
-	}).HandshakeContext(context.Background())
+	}).Handshake()
 
 	// If hInfo's Conn field is nil, then GetConfigForClient was never called, so another error occurred
 	if hInfo.Conn == nil {
