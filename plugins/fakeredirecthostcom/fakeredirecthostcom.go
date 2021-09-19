@@ -1,11 +1,14 @@
 package fakeredirecthost
 
 import (
+	"bytes"
 	"fmt"
 	"hiddenbridge/options"
 	"hiddenbridge/plugins"
+	"io/ioutil"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/rs/zerolog/log"
 )
@@ -61,10 +64,21 @@ func (p *FakeRedirectHostHandler) ProxyURL(hostURL *url.URL) (*url.URL, error) {
 	return nil, nil
 }
 
-func (p *FakeRedirectHostHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, *http.Request, error) {
+func (p *FakeRedirectHostHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, error) {
+
+	path := req.URL.Path
+	if strings.Contains(path, "/custom") {
+		return nil, nil
+	}
 
 	nextURL := *reqURL
 	nextURL.Host = fmt.Sprintf("%s:%s", "fakehost.com", reqURL.Port())
 
-	return &nextURL, req, nil // by default plugins will not round trip the request
+	return &nextURL, nil
+}
+
+func (p *FakeRedirectHostHandler) HandleResponse(reqURL *url.URL, resp *http.Response) error {
+	body := "<HTML><HEAD><TITLE>Custom response</TITLE></HEAD><BODY>This here be a custom response!</BODY></HTML>\r\n"
+	resp.Body = ioutil.NopCloser(bytes.NewBuffer([]byte(body)))
+	return nil
 }

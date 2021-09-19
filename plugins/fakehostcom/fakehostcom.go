@@ -84,9 +84,9 @@ func (p *FakeHostHandler) DirectRemote(hostURL *url.URL) (*url.URL, error) {
 	return realURL, nil
 }
 
-func (p *FakeHostHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, *http.Request, error) {
+func (p *FakeHostHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, error) {
 	directURL, err := p.DirectRemote(reqURL)
-	return directURL, req, err // by default plugins will not round trip the request
+	return directURL, err
 }
 
 func (p *FakeHostHandler) HandleResponse(reqURL *url.URL, resp *http.Response) error {
@@ -95,8 +95,8 @@ func (p *FakeHostHandler) HandleResponse(reqURL *url.URL, resp *http.Response) e
 	var err error
 
 	bodyBytes, err = ioutil.ReadAll(resp.Body)
+	resp.Body.Close()
 	bodyBytes = bytes.Replace(bodyBytes, []byte("Served to you from a server far, far, away."), []byte("Served to you from a dish that's best served cold."), -1)
-
 	resp.Header.Set("content-length", strconv.Itoa(len(bodyBytes)))
 
 	//reset the response body to the original unread state

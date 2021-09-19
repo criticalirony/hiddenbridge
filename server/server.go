@@ -489,7 +489,7 @@ func (s *ProxyServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 		currentPlug = plug
 
-		reqURL, req, err = plug.HandleRequest(reqURL, req)
+		reqURL, err = plug.HandleRequest(reqURL, req)
 		if err != nil {
 			http.Error(rw, xerrors.Errorf("%s server %s plugin failed to handle url %s: %w", s.Name, plug.Name(), req.Host, err).Error(), http.StatusInternalServerError)
 			return
@@ -543,10 +543,40 @@ func (s *ProxyServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		}
 
 		rp.ServeHTTP(rw, req)
+		return
 	}
 
-	log.Debug().Msgf("R: %+v", req)
-	rw.WriteHeader(http.StatusAccepted)
+	resp := &http.Response{
+		StatusCode:    http.StatusOK,
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Header:        http.Header{},
+		Request:       req,
+		Close:         true,
+		ContentLength: -1, // Mark that the content length hasn't been set
+	}
+
+	if err = s.ModifyResponse(resp); err != nil {
+		s.ErrorHandler(rw, req, err)
+		return
+	}
+
+	if resp.Body != nil && resp.Header.Get("content-length") == "" && resp.ContentLength < 0 {
+		bodyBytes, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			s.ErrorHandler(rw, req, err)
+			return
+		}
+		resp.ContentLength = int64(len(bodyBytes))
+
+		resp.Body.Close()
+		resp.Body = ioutil.NopCloser(bytes.NewBuffer(bodyBytes))
+	}
+
+	if err = resp.Write(rw); err != nil {
+		s.ErrorHandler(rw, req, err)
+		return
+	}
 }
 
 func (s *ProxyServer) ModifyResponse(resp *http.Response) error {

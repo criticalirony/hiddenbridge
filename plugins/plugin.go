@@ -22,7 +22,7 @@ type Plugin interface {
 	HandlesURL(hostURL *url.URL) bool
 	DirectRemote(hostURL *url.URL) (*url.URL, error)
 	ProxyURL(hostURL *url.URL) (*url.URL, error)
-	HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, *http.Request, error)
+	HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, error)
 	HandleResponse(reqURL *url.URL, resp *http.Response) error
 }
 
@@ -78,8 +78,8 @@ func (b *BasePlugin) ProxyURL(hostURL *url.URL) (*url.URL, error) {
 	return nil, nil // by default plugins will not require a proxy for their requests
 }
 
-func (b *BasePlugin) HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, *http.Request, error) {
-	return nil, nil, nil // by default plugins will not round trip the request
+func (b *BasePlugin) HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, error) {
+	return nil, nil // by default plugins will not round trip the request
 }
 
 func (b *BasePlugin) HandleResponse(reqURL *url.URL, resp *http.Response) error {
