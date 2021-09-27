@@ -144,7 +144,12 @@ func (s *ProxyServer) Init(configFile string) (err error) {
 	plugs := map[string]plugins.Plugin{}
 
 	for name, plugNewFn := range plugins.PluginBuilder {
-		pOPts := options.FromMap(name, pluginsConfig[name].(map[string]interface{}))
+		plugConfig, ok := pluginsConfig[name]
+		if !ok {
+			return xerrors.Errorf("%s contains no options for plugin %s", configFile, name)
+		}
+
+		pOPts := options.FromMap(name, plugConfig.(map[string]interface{}))
 		plugin := plugNewFn()
 		plugin.Init(pOPts)
 
@@ -274,14 +279,9 @@ func (s *ProxyServer) IsStarted() chan struct{} {
 }
 
 func (s *ProxyServer) DialProxyTimeout(network string, remoteAddress, proxy *url.URL, timeout time.Duration) (net.Conn, error) {
-	var (
-		err      error
-		proxyURL *url.URL
-	)
-
-	proxyConn, err := net.DialTimeout(network, proxyURL.Host, timeout)
+	proxyConn, err := net.DialTimeout(network, proxy.Host, timeout)
 	if err != nil {
-		err = xerrors.Errorf("dial proxy %s timeout %s", proxyURL.String(), timeout.String())
+		err = xerrors.Errorf("dial proxy %s timeout %s", proxy.String(), timeout.String())
 		return nil, err
 	}
 
@@ -291,12 +291,12 @@ func (s *ProxyServer) DialProxyTimeout(network string, remoteAddress, proxy *url
 		}
 	}()
 
-	if proxyURL.Scheme == "https" {
+	if proxy.Scheme == "https" {
 		// Upgrade connection to TLS
 		config := &tls.Config{InsecureSkipVerify: true}
 		tlsClient := tls.Client(proxyConn, config)
 		if err = tlsClient.Handshake(); err != nil {
-			err = xerrors.Errorf("tls client handshake to proxy server %s failure: %w", proxyURL.String(), err)
+			err = xerrors.Errorf("tls client handshake to proxy server %s failure: %w", proxy.String(), err)
 			return nil, err
 		}
 
@@ -311,19 +311,19 @@ func (s *ProxyServer) DialProxyTimeout(network string, remoteAddress, proxy *url
 	}
 
 	if err = req.WriteProxy(proxyConn); err != nil {
-		err = xerrors.Errorf("failed to send connect request to proxy %s: %w", proxyURL.String(), err)
+		err = xerrors.Errorf("failed to send connect request to proxy %s: %w", proxy.String(), err)
 		return nil, err
 	}
 
 	br := bufio.NewReader(proxyConn)
 	resp, err := http.ReadResponse(br, req)
 	if err != nil {
-		err = xerrors.Errorf("failed to read response from proxy %s: %w", proxyURL.String(), err)
+		err = xerrors.Errorf("failed to read response from proxy %s: %w", proxy.String(), err)
 		return nil, err
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		err = xerrors.Errorf("proxy %s failed to connect to remote host %d %s", proxyURL.String(), resp.StatusCode, resp.Status)
+		err = xerrors.Errorf("proxy %s failed to connect to remote host %d %s", proxy.String(), resp.StatusCode, resp.Status)
 	}
 
 	return proxyConn, nil
@@ -395,9 +395,37 @@ func (s *ProxyServer) HandleRawConnection(clientConn net.Conn, hostURL *url.URL)
 func (s *ProxyServer) GetCertificate(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	// Use hiddenbridge's CA certificate to dynamically generate and sign the server certificate for this request
 	// cache certificates for efficiency
+	var (
+		err      error
+		ok       bool
+		siteCert *tls.Certificate
+	)
 
-	if siteCert, ok := s.siteCerts[chi.ServerName]; ok {
+	if siteCert, ok = s.siteCerts[chi.ServerName]; ok {
 		return siteCert, nil
+	}
+
+	hostURL, err := utils.NormalizeURL(chi.ServerName)
+	if err != nil {
+		return nil, xerrors.Errorf("%s server could not normalize host %s to url", s.Name, chi.ServerName)
+	}
+
+	hostURL.Scheme = "https"
+	port := chi.Conn.LocalAddr().(*net.TCPAddr).Port
+	hostURL.Host = fmt.Sprintf("%s:%d", hostURL.Hostname(), port)
+
+	// A plugin may also serve its own certificate
+	plug := s.findPlugin(hostURL)
+	if plug != nil {
+		if siteCert, err = plug.HandleCertificate(hostURL.Hostname()); err != nil {
+			return nil, xerrors.Errorf("%s plugin could not handle certificate for %s", plug.Name(), chi.ServerName)
+		}
+
+		if siteCert != nil {
+			log.Debug().Msgf("%s plugin handled site cert %s request", s.Name, chi.ServerName)
+			s.siteCerts[chi.ServerName] = siteCert
+			return siteCert, nil
+		}
 	}
 
 	log.Debug().Msgf("%s server generating site cert %s", s.Name, chi.ServerName)
@@ -452,15 +480,15 @@ func (s *ProxyServer) GetCertificate(chi *tls.ClientHelloInfo) (*tls.Certificate
 		Bytes: x509.MarshalPKCS1PrivateKey(certPrivKey),
 	})
 
-	siteCert, err := tls.X509KeyPair(certPEM.Bytes(), certPrivKeyPEM.Bytes())
+	x509cert, err := tls.X509KeyPair(certPEM.Bytes(), certPrivKeyPEM.Bytes())
 	if err != nil {
 		err = xerrors.Errorf("%s server site X509 key pair failure: %w", s.Name, err)
 		return nil, err
 	}
 
-	s.siteCerts[chi.ServerName] = &siteCert
+	s.siteCerts[chi.ServerName] = &x509cert
 
-	return &siteCert, nil
+	return &x509cert, nil
 }
 
 // ServeHTTP handles the request and returns the response to client
@@ -513,16 +541,16 @@ func (s *ProxyServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	if reqURL != nil {
-		if *origReqURL == *reqURL {
-			err = xerrors.Errorf("recursive request")
-			log.Error().Err(err).Msgf("%s server failed to proxy url %s", s.Name, reqURL.String())
-			http.Error(rw, xerrors.Errorf("%s server failed to proxy url %s: %w", s.Name, reqURL.String(), err).Error(), http.StatusMisdirectedRequest)
-			return
-		}
-
 		proxyURL, err := currentPlug.ProxyURL(reqURL)
 		if err != nil {
 			http.Error(rw, xerrors.Errorf("%s server %s plugin failed to check proxy url %s: %w", s.Name, plug.Name(), reqURL.String(), err).Error(), http.StatusInternalServerError)
+			return
+		}
+
+		if proxyURL == nil && (*origReqURL == *reqURL) {
+			err = xerrors.Errorf("recursive request")
+			log.Error().Err(err).Msgf("%s server failed to proxy url %s", s.Name, reqURL.String())
+			http.Error(rw, xerrors.Errorf("%s server failed to proxy url %s: %w", s.Name, reqURL.String(), err).Error(), http.StatusMisdirectedRequest)
 			return
 		}
 

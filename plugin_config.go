@@ -7,4 +7,5 @@ import (
 	_ "hiddenbridge/plugins/fakehostcom"
 	_ "hiddenbridge/plugins/fakeredirecthostcom"
 	_ "hiddenbridge/plugins/githubcom"
+	_ "hiddenbridge/plugins/goproxy"
 )

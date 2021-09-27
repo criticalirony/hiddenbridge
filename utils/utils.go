@@ -50,12 +50,22 @@ func Done(ctx context.Context) bool {
 	}
 }
 
+func SplitHostPath(rawURL string) (host, path string) {
+	idx := strings.Index(rawURL, "/")
+	if idx < 0 {
+		return rawURL, ""
+	}
+
+	return rawURL[:idx], rawURL[idx:]
+}
+
 func NormalizeURL(rawURL string) (*url.URL, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		// This occurs when there is no sheme and the host starts with a number; i.e. an IP address
 		if !strings.HasPrefix(rawURL, "http") {
-			if !strings.HasSuffix(rawURL, ":443") {
+			host, _ := SplitHostPath(rawURL)
+			if !strings.HasSuffix(host, ":443") {
 				rawURL = "http://" + rawURL
 			} else {
 				rawURL = "https://" + rawURL
@@ -73,10 +83,13 @@ func NormalizeURL(rawURL string) (*url.URL, error) {
 	if len(u.Scheme) == 0 && len(u.Host) == 0 && len(u.Path) > 0 {
 		// Assume no scheme and no port
 		// u.path == bob.com
-		rawURL = fmt.Sprintf("http://%s:80", rawURL)
+		host, path := SplitHostPath(rawURL)
+		rawURL = fmt.Sprintf("http://%s:80%s", host, path)
 	} else if len(u.Scheme) > 0 && len(u.Host) == 0 {
 		// Assume no scheme (might or might not have a port!)
 		host, port, _ := net.SplitHostPort(rawURL)
+		port, path := SplitHostPath(port)
+
 		if len(host) == 0 {
 			host = rawURL
 		}
@@ -90,7 +103,7 @@ func NormalizeURL(rawURL string) (*url.URL, error) {
 			scheme = "https" // Assume if we provide port 443 but no scheme, we really do mean https
 		}
 
-		rawURL = fmt.Sprintf("%s://%s:%s", scheme, host, port)
+		rawURL = fmt.Sprintf("%s://%s:%s%s", scheme, host, port, path)
 	} else if len(u.Scheme) > 0 && len(u.Port()) == 0 {
 		// Assume no port
 		// u.scheme == http, u.host == bob.com
@@ -100,7 +113,7 @@ func NormalizeURL(rawURL string) (*url.URL, error) {
 			port = "443"
 		}
 
-		rawURL = fmt.Sprintf("%s://%s:%s", u.Scheme, u.Host, port)
+		rawURL = fmt.Sprintf("%s://%s:%s%s", u.Scheme, u.Host, port, u.Path)
 	}
 
 	u, err = url.Parse(rawURL)

@@ -7,6 +7,13 @@ Transparent proxy, supported by DNS resolver with custom configuration.
 hiddenbridge -config config.yml
 ```
 
+## Building
+```
+python3 -m pip install ./python/requirements.txt
+go generate
+go build
+```
+
 ## Root CA
 ```
 mkdir -p keys

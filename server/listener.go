@@ -16,6 +16,14 @@ import (
 	"golang.org/x/xerrors"
 )
 
+type tlsUpgradeError struct {
+	err error
+}
+
+func (e tlsUpgradeError) Error() string   { return xerrors.Errorf("tls upgrade: %w", e.err).Error() }
+func (e tlsUpgradeError) Timeout() bool   { return false }
+func (e tlsUpgradeError) Temporary() bool { return true } // This allows the outer server to continue serving requests
+
 type Listener struct {
 	inner               net.Listener
 	HandleRawConnection func(clientConn net.Conn, hostURL *url.URL) (ok bool, err error)
@@ -128,7 +136,15 @@ func (l *Listener) Accept() (net.Conn, error) {
 
 	if secure {
 		// Upgrade connection to TLS
-		return upgradeConnection(wrappedConn, l.GetCertificate)
+		tlsConn, err := upgradeConnection(wrappedConn, l.GetCertificate)
+		if err != nil {
+			// Failed to upgrade connection
+			wrappedConn.Close()
+			err = &tlsUpgradeError{err: err}
+			return nil, err
+		}
+
+		return tlsConn, nil
 	}
 
 	return wrappedConn, err

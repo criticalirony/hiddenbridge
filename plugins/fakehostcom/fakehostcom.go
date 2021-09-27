@@ -64,12 +64,7 @@ func (p *FakeHostHandler) DirectRemote(hostURL *url.URL) (*url.URL, error) {
 		realHost string
 	)
 
-	secure := false
 	if hostURL.Scheme == "https" {
-		secure = true
-	}
-
-	if secure {
 		realHost = p.Opts_.Get("host.real.secure", hostURL.String()).String()
 	} else {
 		realHost = p.Opts_.Get("host.real.insecure", hostURL.String()).String()
