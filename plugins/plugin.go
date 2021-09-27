@@ -82,9 +82,9 @@ func (b *BasePlugin) Ports(secure bool) []string {
 	var portOpts []options.OptionValue
 
 	if secure {
-		portOpts = b.Opts_.GetAsList("ports.secure", nil)
+		portOpts = b.Opts_.GetAsList("ports.https", nil)
 	} else {
-		portOpts = b.Opts_.GetAsList("ports.insecure", nil)
+		portOpts = b.Opts_.GetAsList("ports.http", nil)
 	}
 
 	ports := make([]string, len(portOpts))

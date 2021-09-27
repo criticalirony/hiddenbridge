@@ -36,9 +36,9 @@ proxy_plugins:
   githubcom:
     hosts:
       - github.com
-    ports.secure:
+    ports.https:
       - 9000
-    ports.insecure:
+    ports.http:
       - 9001
     host.real: "https://github.com:443"
     host.real.proxy: "http://192.168.226.134:8888"
@@ -50,14 +50,14 @@ Each plugin must provide the following under ```proxy_plugins``` section:
 
 Under ```plugin_name```:
 * ```hosts``` The list of hosts that this plugin will handle
-* ```ports.secure``` The list of secure/TLS/HTTPS ports that this plugin should accept requests on
+* ```ports.https``` The list of secure/TLS/HTTPS ports that this plugin should accept requests on
     * These ports tell Hidden Bridge which ports to bind to and listen on for secure TLS connections
-* ```ports.insecure``` The list of insecure/HTTP ports that this plugin should accept requests on
+* ```ports.http``` The list of insecure/HTTP ports that this plugin should accept requests on
     * These ports tell Hidden Bridge which ports to bind to and listen on for insecure, plain HTTP connections
 
 * **NOTE** Multiple plugins can "listen" on the same ports. Hidden Bridge will resolve the handler plugin by host name.
 
-* **NOTE** Hidden Bridge uses the request's ```SNI``` information for TLS or ```Host``` header for HTTP and picks a suitable handler plugin purely from a matching ```hosts``` entry. It's the responsibility of the plugin to verify that the request is being made from a connection on an acceptable port, i.e. HTTPS requests from one of its ```ports.secure``` or for HTTP requests, one of its  ```ports.insecure```
+* **NOTE** Hidden Bridge uses the request's ```SNI``` information for TLS or ```Host``` header for HTTP and picks a suitable handler plugin purely from a matching ```hosts``` entry. It's the responsibility of the plugin to verify that the request is being made from a connection on an acceptable port, i.e. HTTPS requests from one of its ```ports.https``` or for HTTP requests, one of its  ```ports.http```
 
 ### Command Line flags
 Command line flags are supported by ```Options``` with some minor caveates

@@ -46,9 +46,9 @@ func (p *GithubHandler) HandlesURL(hostURL *url.URL) bool {
 	var realHost string
 
 	if secure {
-		realHost = p.Opts_.Get("host.real.secure", "").String()
+		realHost = p.Opts_.Get("host.real.https", "").String()
 	} else {
-		realHost = p.Opts_.Get("host.real.insecure", "").String()
+		realHost = p.Opts_.Get("host.real.http", "").String()
 	}
 
 	if len(realHost) != 0 {
@@ -78,9 +78,9 @@ func (p *GithubHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*url.
 	)
 
 	if reqURL.Scheme == "https" {
-		realHost = p.Opts_.Get("host.real.secure", "").String()
+		realHost = p.Opts_.Get("host.real.https", "").String()
 	} else {
-		realHost = p.Opts_.Get("host.real.insecure", "").String()
+		realHost = p.Opts_.Get("host.real.http", "").String()
 	}
 
 	if len(realHost) == 0 {
@@ -112,9 +112,9 @@ func (p *GithubHandler) HandleResponse(reqURL *url.URL, resp *http.Response) err
 
 		var port string
 		if locationURL.Scheme == "https" {
-			port = p.Opts_.GetAsList("ports.secure", []string{""})[0].String()
+			port = p.Opts_.GetAsList("ports.https", []string{""})[0].String()
 		} else {
-			port = p.Opts_.GetAsList("ports.insecure", []string{""})[0].String()
+			port = p.Opts_.GetAsList("ports.http", []string{""})[0].String()
 		}
 
 		if len(port) == 0 {
