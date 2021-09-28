@@ -1,7 +1,8 @@
 package options
 
 import (
-	"flag"
+	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -10,140 +11,251 @@ import (
 	"golang.org/x/xerrors"
 )
 
-type OptionValue string
-
-type Options struct {
-	name    string
-	args    map[string][]OptionValue
-	flagSet *flag.FlagSet
+type OptionValue struct {
+	Value interface{}
 }
 
-func NewOptionValue(value interface{}) (optVal *OptionValue) {
-	var opt OptionValue
+// splitKeyPath gives us the root key and the remaining subkeys
+func splitKeyPath(key string) (string, string) {
+	idx := strings.Index(key, ".")
+	if idx < 0 {
+		return key, ""
+	}
 
-	switch vt := value.(type) {
-	case int:
-		opt = OptionValue(strconv.FormatInt(int64(vt), 10))
-	case int64:
-		opt = OptionValue(strconv.FormatInt(int64(vt), 10))
-	case string:
-		opt = OptionValue(vt)
-	case time.Duration:
-		opt = OptionValue(vt.String())
-	default:
-		log.Error().Err(xerrors.Errorf("unsupported")).Msgf("unsupported type %T", value)
+	return key[:idx], key[idx+1:] // Skip the leading "."
+}
+
+// splitKeyIndex gives us the index within the key, assuming its a map or list
+func splitKeyIndex(key string) (string, string) {
+	idx := strings.Index(key, "[")
+	if idx < 0 {
+		return key, ""
+	}
+
+	if !strings.HasSuffix(key, "]") {
+		log.Warn().Msgf("malformed options path %s", key)
+		return key, ""
+	}
+
+	return key[:idx], key[idx+1 : len(key)-1]
+}
+
+func (o *OptionValue) Set(key string, value interface{}) error {
+	var err error
+
+	// If key is empty then we set the root value
+	if len(key) == 0 {
+		o.Value = value
 		return nil
 	}
 
-	optVal = &opt
-	return
-}
-
-func NewOptions(name string) *Options {
-	return &Options{
-		name:    name,
-		args:    map[string][]OptionValue{},
-		flagSet: flag.NewFlagSet(name, flag.ContinueOnError),
+	if o.Value == nil {
+		o.Value = map[string]*OptionValue{}
 	}
-}
 
-func FromMap(name string, args map[string]interface{}) *Options {
-	o := NewOptions(name)
+	// keys can now be: "key", "key.subkey", key[subkey] (map), key[index] (list)
+	// "key.sub1.sub2.sub3", "key[subkey].sub2.sub3", key.sub1[sub2].sub3[index]
+	key, path := splitKeyPath(key)
 
-	for key, value := range args {
-		_, ok := o.args[key]
-		if ok {
-			log.Panic().Msgf("key: %s already found. this should not be able to happen", key)
+	keyIndex := -1
+	key, rawIndex := splitKeyIndex(key)
+	if len(rawIndex) > 0 {
+		if keyIndex, err = strconv.Atoi(rawIndex); err != nil {
+			keyIndex = -1
+		}
+	}
+
+	childMap, ok := o.Value.(map[string]*OptionValue)
+	if !ok {
+		return xerrors.Errorf("%s key type %T is immutable can not reassign", key, o.Value)
+	}
+
+	var child *OptionValue
+
+	child, ok = childMap[key]
+	if !ok {
+		child = &OptionValue{}
+		o.Value.(map[string]*OptionValue)[key] = child
+	}
+
+	if keyIndex >= 0 {
+		childList, ok := child.Value.([]OptionValue)
+		if !ok {
+			childList = make([]OptionValue, keyIndex+1)
+		} else if keyIndex >= len(childList) {
+			childList = append(childList, make([]OptionValue, (keyIndex+1)-len(childList))...)
 		}
 
-		oargs := []OptionValue{}
-
-		valueList, ok := value.([]interface{})
-		if ok {
-			for _, item := range valueList {
-				if optVal := NewOptionValue(item); optVal != nil {
-					oargs = append(oargs, *optVal)
-				}
-			}
-		} else {
-			if optVal := NewOptionValue(value); optVal != nil {
-				oargs = append(oargs, *optVal)
-			}
-		}
-
-		o.args[key] = oargs
+		child.Value = childList
+		child = &childList[keyIndex]
 	}
 
-	return o
+	return child.Set(path, value)
 }
 
-func (o *Options) Get(key string, value interface{}) *OptionValue {
-	args, ok := o.args[key]
-	if !ok || len(args) == 0 {
-		return NewOptionValue(value)
+func (o *OptionValue) Get(key string) *OptionValue {
+	var err error
+
+	if len(key) == 0 {
+		return o
 	}
 
-	if len(args) > 0 {
-		// Join args into comma separated list
-		res := make([]string, len(args))
-		for i, v := range args {
-			res[i] = string(v)
+	// keys can now be: "key", "key.subkey", key[subkey] (map), key[index] (list)
+	// "key.sub1.sub2.sub3", "key[subkey].sub2.sub3", key.sub1[sub2].sub3[index]
+	key, path := splitKeyPath(key)
+
+	keyIndex := -1
+	key, rawIndex := splitKeyIndex(key)
+	if len(rawIndex) > 0 {
+		if keyIndex, err = strconv.Atoi(rawIndex); err != nil {
+			keyIndex = -1
 		}
-
-		return NewOptionValue(strings.Join(res, ", "))
 	}
 
-	return &args[0]
-}
+	if o.Value == nil {
+		log.Warn().Str("key", key).Msg("key has not been assigned")
+		return nil
+	}
 
-func (o *Options) GetAsList(key string, value []string) []OptionValue {
-	args, ok := o.args[key]
-	if !ok || len(args) == 0 {
-		if value == nil {
+	childMap, ok := o.Value.(map[string]*OptionValue)
+	if !ok {
+		log.Warn().Str("key", key).Str("type", fmt.Sprintf("%T", o.Value)).Msg("immutable type can not reassign")
+		return nil
+	}
+
+	var child *OptionValue
+
+	child, ok = childMap[key]
+	if !ok {
+		log.Warn().Str("key", key).Msg("key not found")
+		return nil
+	}
+
+	if keyIndex >= 0 {
+		childList, ok := child.Value.([]OptionValue)
+		if !ok {
+			log.Warn().Str("key", key).Msg("key not subscriptble")
+			return nil
+		} else if keyIndex >= len(childList) {
+			log.Warn().Str("key", key).Str("index", fmt.Sprintf("%d", keyIndex)).Msg("key index out of range")
 			return nil
 		}
 
-		if len(value) == 0 {
+		child = &childList[keyIndex]
+	}
+
+	return child.Get(path)
+}
+
+func (o *OptionValue) Int() int {
+	return o.Value.(int)
+}
+
+func (o *OptionValue) Int64() int64 {
+	val, ok := o.Value.(int64)
+	if !ok {
+		return int64(o.Value.(int))
+	}
+
+	return val
+}
+
+func (o *OptionValue) String() string {
+	val, ok := o.Value.(string)
+	if !ok {
+		val = fmt.Sprintf("%v", o.Value)
+	}
+
+	return val
+}
+
+func (o *OptionValue) Duration() time.Duration {
+	if val, ok := o.Value.(time.Duration); ok {
+		return val
+	}
+
+	if val, ok := o.Value.(string); ok {
+		if dur, err := time.ParseDuration(val); err == nil {
+			return dur
+		}
+
+		return 0
+	}
+
+	if val, ok := o.Value.(int); ok {
+		return time.Duration(val)
+	}
+
+	if val, ok := o.Value.(int64); ok {
+		return time.Duration(val)
+	}
+
+	return 0
+}
+
+func (o *OptionValue) List() []OptionValue {
+	if val, ok := o.Value.([]OptionValue); ok {
+		return val
+	}
+
+	if val, ok := o.Value.(map[string]OptionValue); ok {
+		if len(val) == 0 {
 			return []OptionValue{}
 		}
 
-		res := make([]OptionValue, len(value))
-		for i, v := range value {
-			res[i] = OptionValue(v)
+		keys := make([]string, len(val))
+		i := 0
+		for key, _ := range val {
+			keys[i] = key
+			i += 1
 		}
-		return res
+
+		if _, err := strconv.Atoi(keys[0]); err == nil {
+			sort.Slice(keys, func(i, j int) bool {
+				ii, err := strconv.Atoi(keys[i])
+				if err != nil {
+					return false
+				}
+
+				ji, err := strconv.Atoi(keys[j])
+				if err != nil {
+					return false
+				}
+
+				return ii < ji
+			})
+		}
+
+		values := make([]OptionValue, len(val))
+		for i, key := range keys {
+			values[i] = val[key]
+		}
+		return values
 	}
 
-	return args
+	return []OptionValue{*o} // Return self as a 1 item list
 }
 
-func (ov OptionValue) String() string {
-	return string(ov)
-}
-
-func (ov OptionValue) Duration() time.Duration {
-	v, err := time.ParseDuration(string(ov))
-	if err != nil {
-		return 0
+func (o *OptionValue) Map() map[string]OptionValue {
+	if val, ok := o.Value.(map[string]OptionValue); ok {
+		return val
 	}
 
-	return v
-}
+	if val, ok := o.Value.([]OptionValue); ok {
+		if len(val) == 0 {
+			return map[string]OptionValue{}
+		}
 
-func (ov OptionValue) Int64() int64 {
-	v, err := strconv.ParseInt(string(ov), 0, 64)
-	if err != nil {
-		return 0
+		values := make(map[string]OptionValue, len(val))
+		for i, item := range val {
+			key := fmt.Sprintf("item%d", i)
+			values[key] = item
+		}
+
+		return values
 	}
 
-	return v
-}
-
-func (ov OptionValue) Int() int {
-	v, err := strconv.ParseInt(string(ov), 0, strconv.IntSize)
-	if err != nil {
-		return 0
-	}
-
-	return int(v)
+	return map[string]OptionValue{
+		"default": *o,
+	} // Return self as a 1 item map with key "default"
 }
