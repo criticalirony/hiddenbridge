@@ -119,7 +119,7 @@ The API is:
 * String() string
 * Ports(bool) []string
 * HandlesURL(hostURL *url.URL) bool
-* DirectRemote(hostURL *url.URL) (*url.URL, error)
+* RemoteURL(hostURL *url.URL) (*url.URL, error)
 * ProxyURL(hostURL *url.URL) (*url.URL, error)
 * HandleCertificate(site string) (*tls.Certificate, error)
 * HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, error)

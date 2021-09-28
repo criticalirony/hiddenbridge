@@ -1,6 +1,15 @@
 # Hidden Bridge
 ## Introduction
-Transparent proxy, supported by DNS resolver with custom configuration.
+Hidden bridge is a virtual server service, supported by DNS resolver with custom configuration.
+
+Currently it supports HTTP and HTTPS protocols, and a virtual service plugin can be written to be have in any way required
+
+### Examples
+* Reverse proxying
+* URL path (re)mapping
+* Custom APIs
+* custom request and response processing
+* Tunelling other TCP protocols that can be massaged to connect as HTTPS clients (i.e using ssh proxy command, gnutls client etc)
 
 ## Launching
 ```
