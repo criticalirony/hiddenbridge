@@ -190,8 +190,8 @@ func (s *ProxyServer) Init(configFile string) (err error) {
 		i++
 	}
 
-	certFile := s.Opts.GetDefault("ca.cert", "").String()
-	keyFile := s.Opts.GetDefault("ca.key", "").String()
+	certFile := s.Opts.Get("ca.cert").String()
+	keyFile := s.Opts.Get("ca.key").String()
 
 	caCert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
