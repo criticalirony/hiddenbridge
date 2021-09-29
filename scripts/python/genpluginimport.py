@@ -2,9 +2,12 @@
 
 import argparse
 import yaml
+import os
 
+WORKING_DIR = os.path.abspath(os.path.normpath(os.path.dirname(__file__)))
 DEFAULT_OUTPUT = 'config.go'
-DEFAULT_APP = './python/genpluginimport.py'
+DEFAULT_APP = os.path.join(os.path.relpath(
+    WORKING_DIR, os.getcwd()), os.path.basename(__file__))
 
 
 def process(*, config=None, output=DEFAULT_OUTPUT):
@@ -25,12 +28,13 @@ def process(*, config=None, output=DEFAULT_OUTPUT):
 
     import_list = set()
     # port_list = set()
-    for name in config['proxy_plugins'].keys():
+    for name in config['plugins'].keys():
         import_list.add(name)
         # port_list.update(plugin['port'])
 
     source.append('import (')
-    source += [f'\t_ "hiddenbridge/plugins/{x}"' for x in sorted(import_list)]
+    source += [
+        f'\t_ "hiddenbridge/pkg/plugins/{x}"' for x in sorted(import_list)]
     source += [')', '']
 
     # source += [

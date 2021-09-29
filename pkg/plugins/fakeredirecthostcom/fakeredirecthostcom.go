@@ -3,8 +3,8 @@ package fakeredirecthost
 import (
 	"bytes"
 	"fmt"
-	"hiddenbridge/options"
-	"hiddenbridge/plugins"
+	"hiddenbridge/pkg/options"
+	"hiddenbridge/pkg/plugins"
 	"io/ioutil"
 	"net/http"
 	"net/url"
@@ -29,7 +29,7 @@ func init() {
 	}
 }
 
-func (p *FakeRedirectHostHandler) Init(opts *options.Options) error {
+func (p *FakeRedirectHostHandler) Init(opts *options.OptionValue) error {
 	p.BasePlugin.Init(opts)
 	return nil
 }

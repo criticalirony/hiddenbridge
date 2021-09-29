@@ -29,13 +29,14 @@
             "type": "go",
             "request": "launch",
             "mode": "auto",
-            "program": "${workspaceFolder}",
+            "program": "${workspaceFolder}/cmd/hiddenbridge",
             "args": [
                 "-config",
                 "config.yml",
                 "-v",
                 "debug"
             ],
+            "cwd": "${workspaceFolder}",
         }
     ]
 }

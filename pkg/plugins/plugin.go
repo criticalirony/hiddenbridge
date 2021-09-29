@@ -3,7 +3,7 @@ package plugins
 import (
 	"crypto/tls"
 	"fmt"
-	"hiddenbridge/options"
+	"hiddenbridge/pkg/options"
 	"net/http"
 	"net/url"
 
@@ -19,7 +19,7 @@ var (
 // All plugins must embed the BasePlugin, which also implements simple defaults for all functions
 type Plugin interface {
 	Name() string
-	Init(opts *options.Options) error
+	Init(opts *options.OptionValue) error
 	String() string
 	Ports(bool) []string
 	HandlesURL(hostURL *url.URL) bool
@@ -37,7 +37,7 @@ func init() {
 // BasePlugin - All services must embed the BasePlugin, which also implements simple defaults for all functions
 type BasePlugin struct {
 	Name_ string
-	Opts  *options.Options
+	Opts  *options.OptionValue
 	Certs map[string]*tls.Certificate
 }
 
@@ -45,13 +45,13 @@ func (b *BasePlugin) Name() string {
 	return b.Name_
 }
 
-func (b *BasePlugin) Init(opts *options.Options) error {
+func (b *BasePlugin) Init(opts *options.OptionValue) error {
 	b.Opts = opts
 
 	// Expected config if a plugin wants to host its own certificate
-	certFiles := b.Opts.GetAsList("site.certs", nil)
-	keyFiles := b.Opts.GetAsList("site.keys", nil)
-	hosts := b.Opts.GetAsList("hosts", nil)
+	certFiles := b.Opts.GetDefault("site.certs", nil).List()
+	keyFiles := b.Opts.GetDefault("site.keys", nil).List()
+	hosts := b.Opts.Get("hosts").List()
 
 	if len(certFiles) != len(keyFiles) {
 		return xerrors.Errorf("invalid 1:1 mapping of X509 key pairs and certs")
@@ -82,9 +82,9 @@ func (b *BasePlugin) Ports(secure bool) []string {
 	var portOpts []options.OptionValue
 
 	if secure {
-		portOpts = b.Opts.GetAsList("ports.https", nil)
+		portOpts = b.Opts.Get("ports.https").List()
 	} else {
-		portOpts = b.Opts.GetAsList("ports.http", nil)
+		portOpts = b.Opts.Get("ports.http").List()
 	}
 
 	ports := make([]string, len(portOpts))

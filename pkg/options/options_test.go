@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func TestOptionSimple(t *testing.T) {
@@ -87,12 +88,12 @@ func TestOptionSimpleList(t *testing.T) {
 	require.Equal(t, expected, actual)
 
 	o4 := &OptionValue{
-		Value: []OptionValue{
-			{Value: 1},
-			{Value: 2},
-			{Value: 3},
-			{Value: 4},
-			{Value: 5},
+		[]OptionValue{
+			{1},
+			{2},
+			{3},
+			{4},
+			{5},
 		},
 	}
 
@@ -114,12 +115,12 @@ func TestOptionSimpleList(t *testing.T) {
 
 func TestOptionSimpleMap(t *testing.T) {
 	o1 := &OptionValue{
-		Value: map[string]OptionValue{
-			"item0": {Value: 1},
-			"item1": {Value: 2},
-			"item2": {Value: 3},
-			"item3": {Value: 4},
-			"item4": {Value: 5},
+		map[string]*OptionValue{
+			"item0": {1},
+			"item1": {2},
+			"item2": {3},
+			"item3": {4},
+			"item4": {5},
 		},
 	}
 
@@ -151,7 +152,7 @@ func TestOptionSimpleMap(t *testing.T) {
 	require.Equal(t, expectedList, actualList)
 
 	o2 := &OptionValue{
-		Value: map[string]OptionValue{
+		Value: map[string]*OptionValue{
 			"10": {Value: 10},
 			"5":  {Value: 5},
 			"7":  {Value: 7},
@@ -169,7 +170,7 @@ func TestOptionSimpleMap(t *testing.T) {
 	require.Equal(t, expectedList, actualList)
 
 	o3 := &OptionValue{
-		Value: map[string]OptionValue{},
+		Value: map[string]*OptionValue{},
 	}
 
 	expected = map[string]int{}
@@ -422,15 +423,377 @@ func TestCommandLineArgsAppend(t *testing.T) {
 	o1.Set("cli.arg", []string{})
 
 	flagSet.Func("arg", "Will append to a list", func(s string) error {
-		val := o1.Get("cli.arg")
-		valList := val.Value.([]string)
-		valList = append(valList, s)
+		valList := o1.Get("cli.arg").List()
+		valList = append(valList, OptionValue{s})
 		return o1.Set("cli.arg", valList)
 	})
 
 	err := flagSet.Parse([]string{"-arg", "arg1", "-arg", "arg2", "-arg", "arg3"})
 	require.Nil(t, err)
 
-	val := o1.Get("cli.arg")
-	require.Equal(t, []string{"arg1", "arg2", "arg3"}, val.Value.([]string))
+	valList := o1.Get("cli.arg").List()
+	require.Equal(t, []OptionValue{{"arg1"}, {"arg2"}, {"arg3"}}, valList)
+}
+
+func TestOptionParseOptionValueAsValue(t *testing.T) {
+	input := &OptionValue{
+		map[string]*OptionValue{
+			"foo": {
+				map[string]*OptionValue{
+					"bar": {5},
+				},
+			},
+		},
+	}
+
+	expected := &OptionValue{
+		map[string]*OptionValue{
+			"root": {
+				map[string]*OptionValue{
+					"foo": {
+						map[string]*OptionValue{
+							"bar": {5},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	o1 := &OptionValue{}
+	err := o1.Set("root", input.Value)
+	require.Nil(t, err)
+	require.Equal(t, expected, o1)
+
+	input = &OptionValue{
+		[]OptionValue{
+			{5},
+			{6},
+			{7},
+			{8},
+		},
+	}
+
+	expected = &OptionValue{
+		map[string]*OptionValue{
+			"root": {
+				[]OptionValue{
+					{5},
+					{6},
+					{7},
+					{8},
+				},
+			},
+		},
+	}
+
+	o1 = &OptionValue{}
+	err = o1.Set("root", input.Value)
+	require.Nil(t, err)
+	require.Equal(t, expected, o1)
+
+	// Adding a ptr OptionValue
+	input = &OptionValue{5}
+	expected = &OptionValue{
+		map[string]*OptionValue{
+			"root": {5},
+		},
+	}
+
+	o1 = &OptionValue{}
+	err = o1.Set("root", input)
+	require.Nil(t, err)
+	require.Equal(t, expected, o1)
+
+	// Adding a struct OptionValue
+	input2 := OptionValue{5}
+	expected = &OptionValue{
+		map[string]*OptionValue{
+			"root": {5},
+		},
+	}
+
+	o2 := &OptionValue{}
+	err = o2.Set("root", input2)
+	require.Nil(t, err)
+	require.Equal(t, expected, o2)
+}
+
+func TestOptionParseInterfaceValue(t *testing.T) {
+	// Test generic maps
+	input := map[string]int{
+		"key1": 5,
+		"key2": 6,
+		"key3": 7,
+		"key4": 8,
+	}
+
+	expected := &OptionValue{
+		map[string]*OptionValue{
+			"root": {
+				map[string]*OptionValue{
+					"key1": {5},
+					"key2": {6},
+					"key3": {7},
+					"key4": {8},
+				},
+			},
+		},
+	}
+
+	o1 := &OptionValue{}
+	err := o1.Set("root", input)
+	require.Nil(t, err)
+	require.Equal(t, expected, o1)
+
+	val := o1.Get("root.key2")
+	require.NotNil(t, val)
+	require.Equal(t, 6, val.Int())
+
+	val = o1.Get("root[key2]")
+	require.NotNil(t, val)
+	require.Equal(t, 6, val.Int())
+
+	// Test generic lists
+	input2 := []int{10, 1, 8, 3}
+	expected = &OptionValue{
+		map[string]*OptionValue{
+			"root": {
+				[]OptionValue{
+					{10},
+					{1},
+					{8},
+					{3},
+				},
+			},
+		},
+	}
+
+	o2 := &OptionValue{}
+	err = o2.Set("root", input2)
+	require.Nil(t, err)
+	require.Equal(t, expected, o2)
+
+	val = o2.Get("root[2]")
+	require.NotNil(t, val)
+	require.Equal(t, 8, val.Int())
+}
+
+func TestOptionParseYAML(t *testing.T) {
+	input := []byte(`
+---
+root: 5
+`)
+
+	var yamlInput interface{}
+	err := yaml.Unmarshal(input, &yamlInput)
+	require.Nil(t, err)
+
+	o1 := &OptionValue{}
+	err = o1.Set("", yamlInput)
+	require.Nil(t, err)
+
+	val := o1.Get("root")
+	require.NotNil(t, val)
+	require.Equal(t, 5, val.Int())
+
+	input = []byte(`
+---
+root:
+`)
+
+	err = yaml.Unmarshal(input, &yamlInput)
+	require.Nil(t, err)
+
+	o1 = &OptionValue{}
+	err = o1.Set("", yamlInput)
+	require.Nil(t, err)
+
+	val = o1.Get("root")
+	require.NotNil(t, val)
+	require.Nil(t, val.Value)
+
+	input = []byte(`
+---
+root: ""
+`)
+
+	err = yaml.Unmarshal(input, &yamlInput)
+	require.Nil(t, err)
+
+	o1 = &OptionValue{}
+	err = o1.Set("", yamlInput)
+	require.Nil(t, err)
+
+	val = o1.Get("root")
+	require.NotNil(t, val)
+	require.Equal(t, "", val.String())
+
+	input = []byte(`
+---
+root:
+  - item1
+  - item2
+  - item3
+`)
+
+	err = yaml.Unmarshal(input, &yamlInput)
+	require.Nil(t, err)
+
+	o1 = &OptionValue{}
+	err = o1.Set("", yamlInput)
+	require.Nil(t, err)
+
+	val2 := o1.Get("root").List()
+	require.NotNil(t, val2)
+	require.Len(t, val2, 3)
+	require.Equal(t, []OptionValue{{"item1"}, {"item2"}, {"item3"}}, val2)
+
+	input = []byte(`
+---
+root:
+  key1:
+  key2:
+  key3:
+`)
+
+	err = yaml.Unmarshal(input, &yamlInput)
+	require.Nil(t, err)
+
+	o1 = &OptionValue{}
+	err = o1.Set("", yamlInput)
+	require.Nil(t, err)
+
+	val3 := o1.Get("root").Map()
+	require.NotNil(t, val3)
+	require.Len(t, val3, 3)
+	require.Equal(t, map[string]*OptionValue{"key1": {nil}, "key2": {nil}, "key3": {nil}}, val3)
+
+	input = []byte(`
+---
+root:
+  key1: "value1"
+  key2: "value2"
+  key3: "value3"
+`)
+
+	err = yaml.Unmarshal(input, &yamlInput)
+	require.Nil(t, err)
+
+	o1 = &OptionValue{}
+	err = o1.Set("", yamlInput)
+	require.Nil(t, err)
+
+	val3 = o1.Get("root").Map()
+	require.NotNil(t, val3)
+	require.Len(t, val3, 3)
+	require.Equal(t, map[string]*OptionValue{"key1": {"value1"}, "key2": {"value2"}, "key3": {"value3"}}, val3)
+
+	input = []byte(`
+---
+root:
+  key2:
+    - "listItem1"
+    - "listItem2"
+  key1:
+    - "listItem3"
+    - "listItem4"
+  key3:
+    key4:
+      - "listItem5"
+      - "listItem6"
+`)
+
+	err = yaml.Unmarshal(input, &yamlInput)
+	require.Nil(t, err)
+
+	o1 = &OptionValue{}
+	err = o1.Set("", yamlInput)
+	require.Nil(t, err)
+
+	val = o1.Get("root")
+	require.NotNil(t, val)
+	require.Equal(t, "map[key1:[{listItem3} {listItem4}] key2:[{listItem1} {listItem2}] key3:map[key4:[{listItem5} {listItem6}]]]", val.String())
+}
+
+func TestOptionGetNilList(t *testing.T) {
+	o1 := &OptionValue{}
+
+	res := o1.Get("not.a.valid.key").List()
+	require.NotNil(t, res)
+	require.Equal(t, []OptionValue{}, res)
+}
+
+func TestOptionGetNilMap(t *testing.T) {
+	o1 := &OptionValue{}
+
+	res := o1.Get("not.a.valid.key").Map()
+	require.NotNil(t, res)
+	require.Equal(t, map[string]*OptionValue{}, res)
+}
+
+func TestOptionParseNamespaceFlatConfig(t *testing.T) {
+	var yamlInput interface{}
+	input := []byte(`
+goproxy:
+  hosts:
+    - proxy.golang.org
+  site.keys:
+    - "keys/goproxy.key"
+  site.certs:
+    - "keys/goproxy.pem"
+  ports.https:
+    - 9000
+  ports.http:
+    - 9001`)
+
+	expected := &OptionValue{
+		map[string]*OptionValue{
+			"goproxy": {
+				map[string]*OptionValue{
+					"hosts": {
+						[]OptionValue{
+							{"proxy.golang.org"},
+						},
+					},
+					"site": {
+						map[string]*OptionValue{
+							"keys": {
+								[]OptionValue{
+									{"keys/goproxy.key"},
+								},
+							},
+							"certs": {
+								[]OptionValue{
+									{"keys/goproxy.pem"},
+								},
+							},
+						},
+					},
+					"ports": {
+						map[string]*OptionValue{
+							"https": {
+								[]OptionValue{
+									{9000},
+								},
+							},
+							"http": {
+								[]OptionValue{
+									{9001},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	err := yaml.Unmarshal(input, &yamlInput)
+	require.Nil(t, err)
+
+	o1 := &OptionValue{}
+	err = o1.Set("", yamlInput)
+	require.Nil(t, err)
+	require.Equal(t, expected, o1)
 }

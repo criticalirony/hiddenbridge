@@ -2,9 +2,9 @@ package fakehostcom
 
 import (
 	"bytes"
-	"hiddenbridge/options"
-	"hiddenbridge/plugins"
-	"hiddenbridge/utils"
+	"hiddenbridge/pkg/options"
+	"hiddenbridge/pkg/plugins"
+	"hiddenbridge/pkg/utils"
 	"io/ioutil"
 	"net/http"
 	"net/url"
@@ -30,7 +30,7 @@ func init() {
 	}
 }
 
-func (p *FakeHostHandler) Init(opts *options.Options) error {
+func (p *FakeHostHandler) Init(opts *options.OptionValue) error {
 	p.BasePlugin.Init(opts)
 	return nil
 }
@@ -56,7 +56,7 @@ func (p *FakeHostHandler) HandlesURL(hostURL *url.URL) bool {
 }
 
 func (p *FakeHostHandler) ProxyURL(hostURL *url.URL) (*url.URL, error) {
-	return utils.NormalizeURL(p.Opts.Get("host.real.proxy", "").String())
+	return utils.NormalizeURL(p.Opts.Get("host.real.proxy").String())
 }
 
 func (p *FakeHostHandler) RemoteURL(hostURL *url.URL) (*url.URL, error) {
@@ -65,9 +65,9 @@ func (p *FakeHostHandler) RemoteURL(hostURL *url.URL) (*url.URL, error) {
 	)
 
 	if hostURL.Scheme == "https" {
-		realHost = p.Opts.Get("host.real.https", hostURL.String()).String()
+		realHost = p.Opts.GetDefault("host.real.https", hostURL.String()).String()
 	} else {
-		realHost = p.Opts.Get("host.real.http", hostURL.String()).String()
+		realHost = p.Opts.GetDefault("host.real.http", hostURL.String()).String()
 	}
 
 	realURL, err := utils.NormalizeURL(realHost)

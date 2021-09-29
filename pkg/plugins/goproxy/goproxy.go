@@ -2,7 +2,7 @@ package goproxy
 
 import (
 	"crypto/tls"
-	"hiddenbridge/plugins"
+	"hiddenbridge/pkg/plugins"
 	"net/http"
 	"net/url"
 )

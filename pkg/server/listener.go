@@ -5,7 +5,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"fmt"
-	"hiddenbridge/utils"
+	"hiddenbridge/pkg/utils"
 	"io"
 	"net"
 	"net/http"

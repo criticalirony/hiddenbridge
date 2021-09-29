@@ -115,7 +115,7 @@ Each API function is optional to implment. A base plugin implementation, that sh
 
 The API is:
 * Name() string
-* Init(opts *options.Options) error
+* Init(opts *options.OptionValue) error
 * String() string
 * Ports(bool) []string
 * HandlesURL(hostURL *url.URL) bool
@@ -139,7 +139,7 @@ Init should generally not have to be re-implemented as the base implementation d
 
 #### Example
 ```
-func (p *PluginHandler) Init(opts *options.Options) error {
+func (p *PluginHandler) Init(opts *options.OptionValue) error {
     // Do custom initialization here
     // ...
 

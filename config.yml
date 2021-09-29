@@ -1,4 +1,10 @@
-proxy_plugins:
+global:
+  # listen.ip: "192.168.226.135"
+  listen.dev: "ens33"
+  ca.cert: "keys/hiddenbridgeCA.pem"
+  ca.key: "keys/hiddenbridgeCA.key"
+
+plugins:
   githubcom:
     hosts:
       - github.com
@@ -45,9 +51,3 @@ proxy_plugins:
       - 9001
     host.redirect.https: "https://fakehost.com:9000"
     host.redirect.http: "http://fakehost.com:9001"
-
-proxy_server:
-  # listen.ip: "192.168.226.135"
-  listen.dev: "ens33"
-  ca.cert: "keys/hiddenbridgeCA.pem"
-  ca.key: "keys/hiddenbridgeCA.key"

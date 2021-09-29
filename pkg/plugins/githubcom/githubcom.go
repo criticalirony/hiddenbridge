@@ -2,8 +2,8 @@ package githubcom
 
 import (
 	"fmt"
-	"hiddenbridge/plugins"
-	"hiddenbridge/utils"
+	"hiddenbridge/pkg/plugins"
+	"hiddenbridge/pkg/utils"
 	"net/http"
 	"net/url"
 
@@ -46,9 +46,9 @@ func (p *GithubHandler) HandlesURL(hostURL *url.URL) bool {
 	var realHost string
 
 	if secure {
-		realHost = p.Opts.Get("host.real.https", "").String()
+		realHost = p.Opts.Get("host.real.https").String()
 	} else {
-		realHost = p.Opts.Get("host.real.http", "").String()
+		realHost = p.Opts.Get("host.real.http").String()
 	}
 
 	if len(realHost) != 0 {
@@ -78,9 +78,9 @@ func (p *GithubHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*url.
 	)
 
 	if reqURL.Scheme == "https" {
-		realHost = p.Opts.Get("host.real.https", "").String()
+		realHost = p.Opts.Get("host.real.https").String()
 	} else {
-		realHost = p.Opts.Get("host.real.http", "").String()
+		realHost = p.Opts.Get("host.real.http").String()
 	}
 
 	if len(realHost) == 0 {
@@ -112,9 +112,9 @@ func (p *GithubHandler) HandleResponse(reqURL *url.URL, resp *http.Response) err
 
 		var port string
 		if locationURL.Scheme == "https" {
-			port = p.Opts.GetAsList("ports.https", []string{""})[0].String()
+			port = p.Opts.GetDefault("ports.https", "443").List()[0].String()
 		} else {
-			port = p.Opts.GetAsList("ports.http", []string{""})[0].String()
+			port = p.Opts.GetDefault("ports.http", "80").List()[0].String()
 		}
 
 		if len(port) == 0 {
@@ -129,7 +129,7 @@ func (p *GithubHandler) HandleResponse(reqURL *url.URL, resp *http.Response) err
 }
 
 func (p *GithubHandler) ProxyURL(hostURL *url.URL) (*url.URL, error) {
-	proxy := p.Opts.Get("host.real.proxy", "").String()
+	proxy := p.Opts.GetDefault("host.real.proxy", "").String()
 	if len(proxy) == 0 {
 		return nil, nil
 	}

@@ -11,9 +11,9 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
-	"hiddenbridge/options"
-	"hiddenbridge/plugins"
-	"hiddenbridge/utils"
+	"hiddenbridge/pkg/options"
+	"hiddenbridge/pkg/plugins"
+	"hiddenbridge/pkg/utils"
 	"io"
 	"io/ioutil"
 	"math/big"
@@ -36,7 +36,7 @@ var (
 
 type ProxyServer struct {
 	Name    string
-	Opts    *options.Options
+	Opts    *options.OptionValue
 	Plugins map[string]plugins.Plugin
 	Started chan struct{}
 	Addr    string
@@ -69,9 +69,9 @@ func NewProxyServer() *ProxyServer {
 	}
 }
 
-func (s *ProxyServer) parseYamlConfig(yamConfigFile string) (serverConfig map[string]interface{}, pluginsConfig map[string]interface{}, err error) {
+func (s *ProxyServer) parseYamlConfig(yamConfigFile string) (opts *options.OptionValue, err error) {
 
-	var config map[string]map[string]interface{}
+	var config interface{}
 	var yamlFile []byte
 
 	if yamlFile, err = ioutil.ReadFile(yamConfigFile); err != nil {
@@ -84,14 +84,11 @@ func (s *ProxyServer) parseYamlConfig(yamConfigFile string) (serverConfig map[st
 		return
 	}
 
-	var ok bool
-
-	if pluginsConfig, ok = config["proxy_plugins"]; !ok {
-		pluginsConfig = map[string]interface{}{}
-	}
-
-	if serverConfig, ok = config["proxy_server"]; !ok {
-		serverConfig = map[string]interface{}{}
+	opts = &options.OptionValue{}
+	if err = opts.Set("", config); err != nil {
+		err = xerrors.Errorf("failed to initialize options: %w", err)
+		opts = nil
+		return
 	}
 
 	return
@@ -125,11 +122,10 @@ func (s *ProxyServer) findPlugin(hostURL *url.URL) plugins.Plugin {
 }
 
 func (s *ProxyServer) Init(configFile string) (err error) {
-	var serverConfig map[string]interface{}
-	var pluginsConfig map[string]interface{}
+	var config *options.OptionValue
 
 	if strings.HasSuffix(configFile, ".yml") || strings.HasSuffix(configFile, ".yaml") {
-		if serverConfig, pluginsConfig, err = s.parseYamlConfig(configFile); err != nil {
+		if config, err = s.parseYamlConfig(configFile); err != nil {
 			return
 		}
 	} else {
@@ -137,23 +133,21 @@ func (s *ProxyServer) Init(configFile string) (err error) {
 		return
 	}
 
-	psvrOpts := options.FromMap("server", serverConfig)
-	s.Opts = psvrOpts
+	s.Opts = config.Get("global")
 
 	// Initialize plugins
 	plugs := map[string]plugins.Plugin{}
 
 	for name, plugNewFn := range plugins.PluginBuilder {
-		plugConfig, ok := pluginsConfig[name]
-		if !ok {
+		plugOpts := config.Get(fmt.Sprintf("plugins[%s]", name))
+		if plugOpts == nil {
 			return xerrors.Errorf("%s contains no options for plugin %s", configFile, name)
 		}
 
-		pOPts := options.FromMap(name, plugConfig.(map[string]interface{}))
 		plugin := plugNewFn()
-		plugin.Init(pOPts)
+		plugin.Init(plugOpts)
 
-		hosts := pOPts.GetAsList("hosts", nil)
+		hosts := plugOpts.Get("hosts").List()
 		for _, host := range hosts {
 			plugs[host.String()] = plugin
 			log.Info().Msgf("host %s registered to plugin %s", host.String(), name)
@@ -164,13 +158,13 @@ func (s *ProxyServer) Init(configFile string) (err error) {
 
 	var listenIP string
 
-	if listenIP = s.Opts.Get("listen.dev", "").String(); listenIP != "" {
+	if listenIP = s.Opts.Get("listen.dev").String(); listenIP != "" {
 		if listenIP, err = utils.GetInterfaceIpv4Addr(listenIP); err != nil {
 			err = xerrors.Errorf("failed to get ipv4 address from device %s: %w", listenIP, err)
 			return err
 		}
 	} else {
-		listenIP = s.Opts.Get("listen.ip", "").String() // Either it will use the IP address provided in the config or listen on all devices
+		listenIP = s.Opts.GetDefault("listen.ip", "").String() // Either it will use the IP address provided in the config or listen on all devices
 	}
 	s.Addr = listenIP
 
@@ -196,8 +190,8 @@ func (s *ProxyServer) Init(configFile string) (err error) {
 		i++
 	}
 
-	certFile := s.Opts.Get("ca.cert", "").String()
-	keyFile := s.Opts.Get("ca.key", "").String()
+	certFile := s.Opts.GetDefault("ca.cert", "").String()
+	keyFile := s.Opts.GetDefault("ca.key", "").String()
 
 	caCert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
@@ -296,7 +290,7 @@ func (s *ProxyServer) DialProxyTimeout(network string, remoteAddress, proxy *url
 		config := &tls.Config{InsecureSkipVerify: true}
 		tlsClient := tls.Client(proxyConn, config)
 		if err = tlsClient.Handshake(); err != nil {
-			err = xerrors.Errorf("tls client handshake to proxy server %s failure: %w", proxy.String(), err)
+			err = xerrors.Errorf("tls client handshake to server %s failure: %w", proxy.String(), err)
 			return nil, err
 		}
 
