@@ -5,16 +5,19 @@ import (
 	"hiddenbridge/pkg/plugins"
 	"hiddenbridge/pkg/utils"
 	"io"
+	"io/ioutil"
 	"net/http"
+	"os"
 
 	"github.com/gorilla/mux"
 	"github.com/rs/zerolog/log"
+	"golang.org/x/xerrors"
 )
 
 type HiddenBridgeHandler struct {
 	plugins.BasePlugin
-
 	router *mux.Router
+	cert   []byte
 }
 
 func init() {
@@ -33,10 +36,38 @@ func init() {
 
 func (p *HiddenBridgeHandler) Init(opts *options.OptionValue) error {
 	p.BasePlugin.Init(opts)
-
-	p.router.NewRoute().GetPathRegexp()
+	p.router.StrictSlash(true)
+	p.router.HandleFunc("/certs/", p.HandleCertsReq)
 
 	return nil
+}
+
+func (p *HiddenBridgeHandler) HandleCertsReq(rw http.ResponseWriter, r *http.Request) {
+	if p.cert == nil {
+		certPath := p.Opts.GetDefault("ca.cert", "").String()
+		if len(certPath) == 0 {
+			http.Error(rw, xerrors.Errorf("%s plugin unable to locate certificate file", p.Name()).Error(), http.StatusInternalServerError)
+			return
+		}
+
+		if _, err := os.Stat(certPath); os.IsNotExist(err) {
+			http.Error(rw, xerrors.Errorf("%s plugin unable to locate certificate file", p.Name()).Error(), http.StatusInternalServerError)
+			return
+		}
+
+		var (
+			err  error
+			cert []byte
+		)
+		if cert, err = ioutil.ReadFile(certPath); err != nil {
+			http.Error(rw, xerrors.Errorf("%s plugin unable to read certificate file", p.Name()).Error(), http.StatusInternalServerError)
+			return
+		}
+
+		p.cert = cert
+	}
+
+	rw.Write(p.cert)
 }
 
 func (p *HiddenBridgeHandler) HandleResponse(rw http.ResponseWriter, req *http.Request, body io.ReadCloser, statusCode int) error {

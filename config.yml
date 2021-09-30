@@ -1,18 +1,19 @@
 global:
   # listen.ip: "192.168.226.135"
   listen.dev: "ens33"
-  ca.cert: "keys/hiddenbridgeCA.pem"
+  ca.cert: &cacert "keys/hiddenbridgeCA.pem"
   ca.key: "keys/hiddenbridgeCA.key"
 
 plugins:
   hiddenbridgeorg:
     hosts:
       - hiddenbridge.org
-
     ports.https:
       - 9000
     ports.http:
       - 9001
+    ca.cert: *cacert
+
   githubcom:
     hosts:
       - github.com
