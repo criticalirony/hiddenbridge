@@ -114,7 +114,7 @@ func (l *Listener) Accept() (net.Conn, error) {
 		if l.HandleRawConnection != nil {
 			ok, err := l.HandleRawConnection(wrappedConn, hostURL)
 			if !ok && err != nil {
-				log.Error().Err(err).Msgf("failure to handle incoming connection for %s", wrappedConn.LocalAddr().String())
+				log.Error().Err(err).Msgf("failure to handle incoming connection on %s", wrappedConn.LocalAddr().String())
 				wrappedConn.Close()
 				continue
 			}

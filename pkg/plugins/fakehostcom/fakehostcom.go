@@ -5,17 +5,13 @@ import (
 	"hiddenbridge/pkg/options"
 	"hiddenbridge/pkg/plugins"
 	"hiddenbridge/pkg/utils"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"net/url"
-	"strconv"
 
 	"github.com/rs/zerolog/log"
 	"golang.org/x/xerrors"
-)
-
-const (
-	pluginName = "fakehostcom"
 )
 
 type FakeHostHandler struct {
@@ -23,10 +19,15 @@ type FakeHostHandler struct {
 }
 
 func init() {
+	pluginName := utils.PackageAsName()
+	if len(pluginName) == 0 {
+		log.Panic().Msgf("failed to retrieve plugin name")
+	}
+
 	plugins.PluginBuilder[pluginName] = func() plugins.Plugin {
-		u := FakeHostHandler{}
-		u.Name_ = pluginName
-		return &u
+		h := FakeHostHandler{}
+		h.Name_ = pluginName
+		return &h
 	}
 }
 
@@ -36,14 +37,8 @@ func (p *FakeHostHandler) Init(opts *options.OptionValue) error {
 }
 
 func (p *FakeHostHandler) HandlesURL(hostURL *url.URL) bool {
-
-	secure := false
-	if hostURL.Scheme == "https" {
-		secure = true
-	}
-
 	hostPort := hostURL.Port()
-	ports := p.Ports(secure)
+	ports := p.Ports(hostURL.Scheme)
 
 	for _, availablePort := range ports {
 		if hostPort == availablePort {
@@ -51,7 +46,7 @@ func (p *FakeHostHandler) HandlesURL(hostURL *url.URL) bool {
 		}
 	}
 
-	log.Warn().Msgf("plugin %s does not support %s", pluginName, hostURL)
+	log.Warn().Msgf("plugin %s does not support %s", p.Name(), hostURL)
 	return false
 }
 
@@ -84,17 +79,24 @@ func (p *FakeHostHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*ur
 	return directURL, err
 }
 
-func (p *FakeHostHandler) HandleResponse(reqURL *url.URL, resp *http.Response) error {
+func (p *FakeHostHandler) HandleResponse(rw http.ResponseWriter, req *http.Request, body io.ReadCloser, statusCode int) error {
 	// Test to check that we can change the body of a response
 	var bodyBytes []byte
 	var err error
 
-	bodyBytes, err = ioutil.ReadAll(resp.Body)
-	resp.Body.Close()
-	bodyBytes = bytes.Replace(bodyBytes, []byte("Served to you from a server far, far, away."), []byte("Served to you from a dish that's best served cold."), -1)
-	resp.Header.Set("content-length", strconv.Itoa(len(bodyBytes)))
+	reqURL, err := utils.NormalizeURL(req.URL.String())
+	if err != nil {
+		return xerrors.Errorf("failed to normailze request url %s", req.URL.String())
+	}
 
-	//reset the response body to the original unread state
-	resp.Body = ioutil.NopCloser(bytes.NewBuffer(bodyBytes))
-	return err
+	if bodyBytes, err = ioutil.ReadAll(body); err != nil {
+		return xerrors.Errorf("failed to read body of response from request %s: %w", reqURL.String(), err)
+	}
+	body.Close()
+	bodyBytes = bytes.Replace(bodyBytes, []byte("Served to you from a server far, far, away."), []byte("Served to you from a dish that's best served cold."), -1)
+	if _, err = rw.Write(bodyBytes); err != nil {
+		return xerrors.Errorf("failed to write response body for request %s: %w", reqURL.String(), err)
+	}
+
+	return nil
 }

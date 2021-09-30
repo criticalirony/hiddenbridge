@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"hiddenbridge/pkg/options"
+	"io"
 	"net/http"
 	"net/url"
 
@@ -21,13 +22,13 @@ type Plugin interface {
 	Name() string
 	Init(opts *options.OptionValue) error
 	String() string
-	Ports(bool) []string
+	Ports(string) []string
 	HandlesURL(hostURL *url.URL) bool
 	RemoteURL(hostURL *url.URL) (*url.URL, error)
 	ProxyURL(hostURL *url.URL) (*url.URL, error)
 	HandleCertificate(site string) (*tls.Certificate, error)
 	HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, error)
-	HandleResponse(reqURL *url.URL, resp *http.Response) error
+	HandleResponse(rw http.ResponseWriter, req *http.Request, body io.ReadCloser, statusCode int) error
 }
 
 func init() {
@@ -78,14 +79,11 @@ func (b *BasePlugin) String() string {
 	return fmt.Sprintf("%s=", b.Name_)
 }
 
-func (b *BasePlugin) Ports(secure bool) []string {
+func (b *BasePlugin) Ports(protocol string) []string {
 	var portOpts []options.OptionValue
 
-	if secure {
-		portOpts = b.Opts.Get("ports.https").List()
-	} else {
-		portOpts = b.Opts.Get("ports.http").List()
-	}
+	key := fmt.Sprintf("ports.%s", protocol)
+	portOpts = b.Opts.Get(key).List()
 
 	ports := make([]string, len(portOpts))
 	for i, port := range portOpts {
@@ -93,18 +91,6 @@ func (b *BasePlugin) Ports(secure bool) []string {
 	}
 
 	return ports
-}
-
-func (b *BasePlugin) HandlesURL(hostURL *url.URL) bool {
-	return false // by default plugins don't handle anything - this gets overriden by the plugin
-}
-
-func (b *BasePlugin) RemoteURL(hostURL *url.URL) (*url.URL, error) {
-	return hostURL, nil // by default plugins will expect a direct (non intercepted) connection
-}
-
-func (b *BasePlugin) ProxyURL(hostURL *url.URL) (*url.URL, error) {
-	return nil, nil // by default plugins will not require a proxy for their requests
 }
 
 func (b *BasePlugin) HandleCertificate(site string) (*tls.Certificate, error) {
@@ -115,10 +101,25 @@ func (b *BasePlugin) HandleCertificate(site string) (*tls.Certificate, error) {
 	return nil, nil // not finding a site certificate is considered not an error
 }
 
+// Thes functions can be overriden in the plugin for custom behavior
+func (b *BasePlugin) HandlesURL(hostURL *url.URL) bool {
+	return true // by default plugins handle everything - this can be overriden by the plugin
+}
+
+func (b *BasePlugin) RemoteURL(hostURL *url.URL) (*url.URL, error) {
+	// by default plugins will be expected to handle an intercepted connection
+	// the base plugin can't support a direct, remote connection (nothing to connect to)
+	return nil, nil
+}
+
+func (b *BasePlugin) ProxyURL(hostURL *url.URL) (*url.URL, error) {
+	return nil, nil // by default plugins will not require a proxy for their requests
+}
+
 func (b *BasePlugin) HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, error) {
 	return nil, nil // by default plugins will not round trip the request
 }
 
-func (b *BasePlugin) HandleResponse(reqURL *url.URL, resp *http.Response) error {
+func (b *BasePlugin) HandleResponse(rw http.ResponseWriter, reqURL *url.URL, body io.ReadCloser, statusCode int) error {
 	return nil // by default plugins will not change the response
 }

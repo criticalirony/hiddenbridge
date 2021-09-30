@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hiddenbridge/pkg/plugins"
 	"hiddenbridge/pkg/utils"
+	"io"
 	"net/http"
 	"net/url"
 
@@ -11,31 +12,26 @@ import (
 	"golang.org/x/xerrors"
 )
 
-const (
-	pluginName = "githubcom"
-)
-
 type GithubHandler struct {
 	plugins.BasePlugin
 }
 
 func init() {
+	pluginName := utils.PackageAsName()
+	if len(pluginName) == 0 {
+		log.Panic().Msgf("failed to retrieve plugin name")
+	}
+
 	plugins.PluginBuilder[pluginName] = func() plugins.Plugin {
-		u := GithubHandler{}
-		u.Name_ = pluginName
-		return &u
+		h := GithubHandler{}
+		h.Name_ = pluginName
+		return &h
 	}
 }
 
 func (p *GithubHandler) HandlesURL(hostURL *url.URL) bool {
-
-	secure := false
-	if hostURL.Scheme == "https" {
-		secure = true
-	}
-
 	hostPort := hostURL.Port()
-	ports := p.Ports(secure)
+	ports := p.Ports(hostURL.Scheme)
 
 	for _, availablePort := range ports {
 		if hostPort == availablePort {
@@ -45,11 +41,8 @@ func (p *GithubHandler) HandlesURL(hostURL *url.URL) bool {
 
 	var realHost string
 
-	if secure {
-		realHost = p.Opts.Get("host.real.https").String()
-	} else {
-		realHost = p.Opts.Get("host.real.http").String()
-	}
+	key := fmt.Sprintf("host.real.%s", hostURL.Scheme)
+	realHost = p.Opts.Get(key).String()
 
 	if len(realHost) != 0 {
 		realURL, err := utils.NormalizeURL(realHost)
@@ -63,7 +56,7 @@ func (p *GithubHandler) HandlesURL(hostURL *url.URL) bool {
 		}
 	}
 
-	log.Warn().Msgf("plugin %s does not support %s", pluginName, hostURL)
+	log.Warn().Msgf("plugin %s does not support %s", p.Name(), hostURL)
 	return false
 }
 
@@ -97,9 +90,10 @@ func (p *GithubHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*url.
 	return realURL, nil
 }
 
-func (p *GithubHandler) HandleResponse(reqURL *url.URL, resp *http.Response) error {
-	if resp.StatusCode >= http.StatusMovedPermanently && resp.StatusCode < http.StatusBadRequest {
-		location := resp.Header.Get("location")
+func (p *GithubHandler) HandleResponse(rw http.ResponseWriter, req *http.Request, body io.ReadCloser, statusCode int) error {
+
+	if statusCode >= http.StatusMovedPermanently && statusCode < http.StatusBadRequest {
+		location := rw.Header().Get("location")
 		if len(location) == 0 {
 			return nil
 		}
@@ -122,7 +116,7 @@ func (p *GithubHandler) HandleResponse(reqURL *url.URL, resp *http.Response) err
 		}
 
 		locationURL.Host = fmt.Sprintf("%s:%s", locationURL.Hostname(), port)
-		resp.Header.Set("location", locationURL.String()) // Update redirected to a local listening port
+		rw.Header().Set("location", locationURL.String()) // Update redirected to a local listening port
 	}
 
 	return nil

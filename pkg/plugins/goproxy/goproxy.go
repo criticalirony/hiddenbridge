@@ -3,12 +3,12 @@ package goproxy
 import (
 	"crypto/tls"
 	"hiddenbridge/pkg/plugins"
+	"hiddenbridge/pkg/utils"
+	"io"
 	"net/http"
 	"net/url"
-)
 
-const (
-	pluginName = "goproxy"
+	"github.com/rs/zerolog/log"
 )
 
 type GoProxyHandler struct {
@@ -16,10 +16,15 @@ type GoProxyHandler struct {
 }
 
 func init() {
+	pluginName := utils.PackageAsName()
+	if len(pluginName) == 0 {
+		log.Panic().Msgf("failed to retrieve plugin name")
+	}
+
 	plugins.PluginBuilder[pluginName] = func() plugins.Plugin {
-		u := GoProxyHandler{}
-		u.Name_ = pluginName
-		return &u
+		h := GoProxyHandler{}
+		h.Name_ = pluginName
+		return &h
 	}
 }
 
@@ -47,6 +52,6 @@ func (b *GoProxyHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*url
 	return nil, nil // by default plugins will not round trip the request
 }
 
-func (b *GoProxyHandler) HandleResponse(reqURL *url.URL, resp *http.Response) error {
+func (b *GoProxyHandler) HandleResponse(rw http.ResponseWriter, req *http.Request, body io.ReadCloser, statusCode int) error {
 	return nil // by default plugins will not change the response
 }

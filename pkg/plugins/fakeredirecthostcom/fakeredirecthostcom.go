@@ -1,20 +1,17 @@
 package fakeredirecthost
 
 import (
-	"bytes"
 	"fmt"
 	"hiddenbridge/pkg/options"
 	"hiddenbridge/pkg/plugins"
-	"io/ioutil"
+	"hiddenbridge/pkg/utils"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
 
 	"github.com/rs/zerolog/log"
-)
-
-const (
-	pluginName = "fakeredirecthostcom"
+	"golang.org/x/xerrors"
 )
 
 type FakeRedirectHostHandler struct {
@@ -22,10 +19,14 @@ type FakeRedirectHostHandler struct {
 }
 
 func init() {
+	pluginName := utils.PackageAsName()
+	if len(pluginName) == 0 {
+		log.Panic().Msgf("failed to retrieve plugin name")
+	}
 	plugins.PluginBuilder[pluginName] = func() plugins.Plugin {
-		u := FakeRedirectHostHandler{}
-		u.Name_ = pluginName
-		return &u
+		h := FakeRedirectHostHandler{}
+		h.Name_ = pluginName
+		return &h
 	}
 }
 
@@ -35,14 +36,8 @@ func (p *FakeRedirectHostHandler) Init(opts *options.OptionValue) error {
 }
 
 func (p *FakeRedirectHostHandler) HandlesURL(hostURL *url.URL) bool {
-
-	secure := false
-	if hostURL.Scheme == "https" {
-		secure = true
-	}
-
 	port := hostURL.Port()
-	ports := p.Ports(secure)
+	ports := p.Ports(hostURL.Scheme)
 
 	for _, availablePort := range ports {
 		if port == availablePort {
@@ -50,7 +45,7 @@ func (p *FakeRedirectHostHandler) HandlesURL(hostURL *url.URL) bool {
 		}
 	}
 
-	log.Warn().Msgf("plugin %s does not support url %s", pluginName, hostURL.String())
+	log.Warn().Msgf("plugin %s does not support url %s", p.Name(), hostURL.String())
 	return false
 }
 
@@ -77,8 +72,11 @@ func (p *FakeRedirectHostHandler) HandleRequest(reqURL *url.URL, req *http.Reque
 	return &nextURL, nil
 }
 
-func (p *FakeRedirectHostHandler) HandleResponse(reqURL *url.URL, resp *http.Response) error {
-	body := "<HTML><HEAD><TITLE>Custom response</TITLE></HEAD><BODY>This here be a custom response!</BODY></HTML>\r\n"
-	resp.Body = ioutil.NopCloser(bytes.NewBuffer([]byte(body)))
+func (p *FakeRedirectHostHandler) HandleResponse(rw http.ResponseWriter, req *http.Request, body io.ReadCloser, statusCode int) error {
+	respBody := "<HTML><HEAD><TITLE>Custom response</TITLE></HEAD><BODY>This here be a custom response!</BODY></HTML>\r\n"
+
+	if _, err := io.WriteString(rw, respBody); err != nil {
+		return xerrors.Errorf("failed to write response body for req %s: %w", req.URL.String(), err)
+	}
 	return nil
 }

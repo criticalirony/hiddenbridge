@@ -5,6 +5,14 @@ global:
   ca.key: "keys/hiddenbridgeCA.key"
 
 plugins:
+  hiddenbridgeorg:
+    hosts:
+      - hiddenbridge.org
+
+    ports.https:
+      - 9000
+    ports.http:
+      - 9001
   githubcom:
     hosts:
       - github.com

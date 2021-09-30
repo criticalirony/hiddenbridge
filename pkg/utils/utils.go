@@ -3,9 +3,11 @@ package utils
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strings"
 
 	"github.com/rs/zerolog/log"
@@ -144,4 +146,63 @@ func URLFromRequest(req *http.Request) (*url.URL, error) {
 	} // valid values for http will be set by default from NormalizeURL
 
 	return reqURL, nil
+}
+
+// Query the runtime for the caller's package
+// taken from: https://stackoverflow.com/a/56960913
+func Package(frame int) string {
+	pc, _, _, _ := runtime.Caller(frame)
+	parts := strings.Split(runtime.FuncForPC(pc).Name(), ".")
+	if len(parts) >= 1 {
+		return parts[0]
+	}
+	return ""
+}
+
+func PackageAsName() string {
+	var name string
+
+	packagePath := Package(2)
+	packageIdx := strings.LastIndex(packagePath, "/")
+	if packageIdx >= 0 && len(packagePath) > packageIdx+1 {
+		name = packagePath[packageIdx+1:]
+	} else {
+		name = packagePath
+	}
+
+	return name
+}
+
+// CopyBuffer returns any write errors or non-EOF read errors, and the amount
+// of bytes written.
+// taken from: go/src/net/http/httputil/reverseproxy.go:455
+func CopyBuffer(dst io.Writer, src io.Reader, buf []byte) (int64, error) {
+	if len(buf) == 0 {
+		buf = make([]byte, 32*1024)
+	}
+	var written int64
+	for {
+		nr, rerr := src.Read(buf)
+		if rerr != nil && rerr != io.EOF && rerr != context.Canceled {
+			log.Error().Err(rerr).Msgf("read error during buffer copy")
+		}
+		if nr > 0 {
+			nw, werr := dst.Write(buf[:nr])
+			if nw > 0 {
+				written += int64(nw)
+			}
+			if werr != nil {
+				return written, werr
+			}
+			if nr != nw {
+				return written, io.ErrShortWrite
+			}
+		}
+		if rerr != nil {
+			if rerr == io.EOF {
+				rerr = nil
+			}
+			return written, rerr
+		}
+	}
 }

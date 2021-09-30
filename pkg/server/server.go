@@ -40,7 +40,7 @@ type ProxyServer struct {
 	Plugins map[string]plugins.Plugin
 	Started chan struct{}
 	Addr    string
-	Ports   []string
+	Ports   map[string]struct{}
 
 	ctx context.Context
 	// cancel  context.CancelFunc
@@ -168,28 +168,20 @@ func (s *ProxyServer) Init(configFile string) (err error) {
 	}
 	s.Addr = listenIP
 
-	portsMap := map[string]struct{}{}
-	for _, plug := range s.Plugins {
-		// Secure ports (HTTPS/TLS)
-		ports := plug.Ports(true)
-		for _, port := range ports {
-			portsMap[port] = struct{}{}
-		}
+	protocols := []string{"https", "http"}
 
-		// Insecure ports (HTTP/Plain text)
-		ports = plug.Ports(false)
-		for _, port := range ports {
-			portsMap[port] = struct{}{}
+	// Effectively a set from a map.. set.. just a map without values
+	portsSet := map[string]struct{}{}
+	for _, protocol := range protocols {
+		for _, plug := range s.Plugins {
+			ports := plug.Ports(protocol)
+			for _, port := range ports {
+				portsSet[port] = struct{}{}
+			}
 		}
 	}
 
-	s.Ports = make([]string, len(portsMap))
-	i := 0
-	for port := range portsMap {
-		s.Ports[i] = port
-		i++
-	}
-
+	s.Ports = portsSet
 	certFile := s.Opts.Get("ca.cert").String()
 	keyFile := s.Opts.Get("ca.key").String()
 
@@ -209,7 +201,8 @@ func (s *ProxyServer) Start() (err error) {
 
 	hsErrChan := make(chan error, len(s.Ports))
 
-	for _, port := range s.Ports {
+	// s.Ports is a set (map with no values) so we iterate over its keys, not values
+	for port := range s.Ports {
 		hs := &http.Server{
 			Addr:        fmt.Sprintf("%s:%s", s.Addr, port),
 			BaseContext: func(l net.Listener) context.Context { return s.ctx },
@@ -260,8 +253,12 @@ func (s *ProxyServer) Start() (err error) {
 }
 
 func (s *ProxyServer) Stop() error {
+	wait := 15 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
+
 	for _, server := range s.servers {
-		server.Shutdown(context.Background())
+		server.Shutdown(ctx)
 	}
 
 	log.Debug().Msgf("all %s listening servers have shutdown", s.Name)
@@ -324,8 +321,8 @@ func (s *ProxyServer) DialProxyTimeout(network string, remoteAddress, proxy *url
 }
 
 // HandleRawConnection allows the processing of a connection from a client and potentially to a remote host
-// before any handshakes or protocols have begun. This allows the oppurtunity to do a direct transfer between hosts
-// without any interception of the data.
+// before any handshakes or protocols have begun.
+// This allows the oppurtunity to do a direct transfer between hosts without any interception of the data.
 // TLS connections can be proxied here without having to MITM the connection; i.e. they can remain secure
 // Plain HTTP requests can be proxied here and directly copied between clients and remote hosts, increasing efficiency
 func (s *ProxyServer) HandleRawConnection(clientConn net.Conn, hostURL *url.URL) (ok bool, err error) {
@@ -355,9 +352,14 @@ func (s *ProxyServer) HandleRawConnection(clientConn net.Conn, hostURL *url.URL)
 				return false, err
 			}
 		} else {
-			remoteConn, err = net.DialTimeout("tcp", remoteURL.Host, time.Second*5)
-			if err != nil {
-				return false, err
+			if *remoteURL != *hostURL {
+				remoteConn, err = net.DialTimeout("tcp", remoteURL.Host, time.Second*5)
+				if err != nil {
+					return false, err
+				}
+			} else {
+				err = xerrors.Errorf("recursive request")
+				return false, xerrors.Errorf("%s server failed to request url %s: %w", s.Name, hostURL.String(), err)
 			}
 		}
 
@@ -543,8 +545,8 @@ func (s *ProxyServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 		if proxyURL == nil && (*origReqURL == *reqURL) {
 			err = xerrors.Errorf("recursive request")
-			log.Error().Err(err).Msgf("%s server failed to proxy url %s", s.Name, reqURL.String())
-			http.Error(rw, xerrors.Errorf("%s server failed to proxy url %s: %w", s.Name, reqURL.String(), err).Error(), http.StatusMisdirectedRequest)
+			log.Error().Err(err).Msgf("%s server failed to request url %s", s.Name, reqURL.String())
+			http.Error(rw, xerrors.Errorf("%s server failed to request url %s: %w", s.Name, reqURL.String(), err).Error(), http.StatusMisdirectedRequest)
 			return
 		}
 
@@ -569,13 +571,7 @@ func (s *ProxyServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	resp := &http.Response{
-		StatusCode:    http.StatusOK,
-		ProtoMajor:    1,
-		ProtoMinor:    1,
-		Header:        http.Header{},
-		Request:       req,
-		Close:         true,
-		ContentLength: -1, // Mark that the content length hasn't been set
+		Request: req,
 	}
 
 	if err = s.ModifyResponse(resp); err != nil {
@@ -583,38 +579,61 @@ func (s *ProxyServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if resp.Body != nil && resp.Header.Get("content-length") == "" && resp.ContentLength < 0 {
-		bodyBytes, err := ioutil.ReadAll(resp.Body)
-		if err != nil {
-			s.ErrorHandler(rw, req, err)
-			return
-		}
-		resp.ContentLength = int64(len(bodyBytes))
+	// Delete existing headers
+	rw.Header().Del("Content-Type")
+	rw.Header().Del("Connection")
 
-		resp.Body.Close()
-		resp.Body = ioutil.NopCloser(bytes.NewBuffer(bodyBytes))
+	// Copy headers
+	for k, vv := range resp.Header {
+		for _, v := range vv {
+			rw.Header().Add(k, v)
+		}
 	}
 
-	if err = resp.Write(rw); err != nil {
-		s.ErrorHandler(rw, req, err)
-		return
+	rw.WriteHeader(resp.StatusCode)
+
+	if resp.Body != http.NoBody {
+		if _, err := utils.CopyBuffer(rw, resp.Body, nil); err != nil {
+			log.Error().Err(err).Msgf("failed to send response body for request %s", reqURL.String())
+		}
 	}
 }
 
 func (s *ProxyServer) ModifyResponse(resp *http.Response) error {
+	var (
+		err    error
+		reqURL *url.URL
+	)
+
 	req := resp.Request
-	reqURL, err := utils.URLFromRequest(req)
-	if err != nil {
-		return xerrors.Errorf("%s server failed to parse url %s: %w", s.Name, req.Host, err)
+
+	var plug plugins.Plugin
+	if req != nil {
+		reqURL, err = utils.URLFromRequest(req)
+		if err != nil {
+			return xerrors.Errorf("%s server failed to parse url %s: %w", s.Name, req.Host, err)
+		}
+
+		plug = s.findPlugin(reqURL)
 	}
 
-	plug := s.findPlugin(reqURL)
 	if plug == nil {
 		// No plugin, so nothing to do
 		return nil
 	}
 
-	return plug.HandleResponse(reqURL, resp)
+	modResponseWriter := NewResponseModifier(resp)
+
+	if err = plug.HandleResponse(modResponseWriter, req, resp.Body, resp.StatusCode); err != nil {
+		return xerrors.Errorf("failed to handle response for request %s: %w", reqURL.String(), err)
+	}
+
+	resp = modResponseWriter.Result()
+	if resp.ProtoAtLeast(1, 1) {
+		resp.Header.Set("Connection", "close")
+	}
+
+	return err
 }
 
 func (s *ProxyServer) ErrorHandler(rw http.ResponseWriter, req *http.Request, err error) {

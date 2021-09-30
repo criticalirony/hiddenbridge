@@ -101,7 +101,7 @@ type PluginHandler struct {
 // incldued
 func init() {
 	plugins.PluginBuilder[pluginName] = func() plugins.Plugin {
-		u := PluginHandler{}
+		h :=PluginHandler{}
 		u.Name_ = pluginName
 		return &u
 	}
