@@ -452,7 +452,7 @@ func (s *ProxyServer) GetCertificate(chi *tls.ClientHelloInfo) (*tls.Certificate
 			Locality:      []string{"Default City"},
 			StreetAddress: []string{""},
 			PostalCode:    []string{""},
-			CommonName:    chi.ServerName,
+			// CommonName:    chi.ServerName,
 		},
 		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback, chi.Conn.LocalAddr().(*net.TCPAddr).IP},
 		DNSNames:     []string{chi.ServerName},

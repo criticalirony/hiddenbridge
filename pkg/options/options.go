@@ -149,7 +149,7 @@ func (o *OptionValue) Set(key string, value interface{}) error {
 
 	childMap, ok := o.Value.(map[string]*OptionValue)
 	if !ok {
-		return xerrors.Errorf("%s key type %T is immutable can not reassign", key, o.Value)
+		return xerrors.Errorf("key: %s existing type: %T is immutable and can not be reassigned", key, o.Value)
 	}
 
 	child, ok = childMap[key]
@@ -330,6 +330,10 @@ func (o *OptionValue) List() []OptionValue {
 		return []OptionValue{}
 	}
 
+	if o.Value == nil {
+		return []OptionValue{}
+	}
+
 	if val, ok := o.Value.([]OptionValue); ok {
 		return val
 	}
@@ -375,6 +379,10 @@ func (o *OptionValue) List() []OptionValue {
 func (o *OptionValue) Map() map[string]*OptionValue {
 	// We should still be able to cast a nil object to an empty map
 	if o == nil {
+		return map[string]*OptionValue{}
+	}
+
+	if o.Value == nil {
 		return map[string]*OptionValue{}
 	}
 

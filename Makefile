@@ -3,10 +3,12 @@ DATE=$(shell date -u +%Y-%m-%d-%H:%M:%S-%Z)
 
 GEN_SRCS = cmd/hiddenbridge/plugin_config.go
 PKG_SRCS = $(shell find ./pkg -name "*.go")
-CMD_SRCS = $(shell find ./cmd -name "*.go")
 
-hiddenbridge: $(PKG_SRCS) $(CMD_SRCS) $(GEN_SRCS)
+hiddenbridge: $(shell find ./cmd -name "*.go") $(PKG_SRCS) $(GEN_SRCS)
 	$(MAKE) build-ver
+
+signcert: $(shell find ./cmd/signcert -name "*.go")
+	go build -o ./signcert ./cmd/signcert
 
  $(GEN_SRCS): config.yml
 	go generate -x ./...
@@ -27,4 +29,5 @@ vendor:
 clean:
 	go clean -x -v -cache -testcache
 	rm -rf hiddenbridge ./cmd/hiddenbridge/hiddenbridge
+	rm -rf signcert ./cmd/signcert/signcert
 	touch config.yml

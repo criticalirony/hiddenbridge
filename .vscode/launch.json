@@ -5,7 +5,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Go: Launch Package",
+            "name": "Go: Launch Hidden Bridge",
             "type": "go",
             "request": "launch",
             "mode": "auto",
@@ -18,8 +18,24 @@
             ],
             "env": {"VERSION": "1.1.1"},
             "cwd": "${workspaceFolder}",
-            "showGlobalVariables": true,
             "buildFlags": "-ldflags '-X hiddenbridge/pkg/build.version=${config:hb.version} -X hiddenbridge/pkg/build.buildDate=${config:hb.buildDate}'",
+        },
+        {
+            "name": "Go: Launch signcert",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/cmd/signcert",
+            "args": [
+                "-v", "debug",
+                "-in", "keys/hiddenbridgeCA.pem",
+                "-in-key", "keys/hiddenbridgeCA.key",
+                "-out", "keys/goproxy.pem",
+                "-out-key", "keys/goproxy.key",
+                "-n", "proxy.golang.org"
+            ],
+            "env": {"VERSION": "1.1.1"},
+            "cwd": "${workspaceFolder}",
         },
         {
             "name": "Python: Test Web Server",
