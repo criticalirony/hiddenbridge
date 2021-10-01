@@ -10,21 +10,21 @@ plugins:
     hosts:
       - hiddenbridge.org
     ports.https:
-      - 9000
+      - 443
     ports.http:
-      - 9001
+      - 80
     ca.cert: *cacert
 
   githubcom:
     hosts:
       - github.com
     ports.https:
-      - 9000
+      - 443
     ports.http:
-      - 9001
+      - 80
     host.real.https: "https://github.com:443"
     host.real.http: "http://github.com:80"
-    host.real.proxy: "http://192.168.226.134:8888"
+    # host.real.proxy: "http://192.168.226.134:8888"
 
   goproxy:
     hosts:
@@ -34,19 +34,19 @@ plugins:
     site.certs:
       - "keys/goproxy.pem"
     ports.https:
-      - 9000
+      - 443
     ports.http:
-      - 9001
+      - 80
 
   fakehostcom:
     hosts:
       - fakehost.com
       - "192.168.226.134"
     ports.https:
-      - 9000
+      - 443
       - 8443
     ports.http:
-      - 9001
+      - 80
       - 8080
     host.real.https: "https://192.168.226.134:8443"
     host.real.http: "http://192.168.226.134:8080"
@@ -56,8 +56,8 @@ plugins:
     hosts:
       - fakeredirecthost.com
     ports.https:
-      - 9000
+      - 443
     ports.http:
-      - 9001
-    host.redirect.https: "https://fakehost.com:9000"
-    host.redirect.http: "http://fakehost.com:9001"
+      - 80
+    host.redirect.https: "https://fakehost.com:443"
+    host.redirect.http: "http://fakehost.com:80"

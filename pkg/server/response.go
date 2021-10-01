@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"fmt"
+	"hiddenbridge/pkg/utils"
 	"io"
 	"net/http"
 	"net/textproto"
@@ -14,8 +15,10 @@ import (
 type ResponseModifier struct {
 	Body *bytes.Buffer
 
-	resp        *http.Response
+	Resp        *http.Response
+	initialized bool
 	wroteHeader bool
+	written     int
 }
 
 func NewResponseModifier(resp *http.Response) *ResponseModifier {
@@ -30,18 +33,20 @@ func NewResponseModifier(resp *http.Response) *ResponseModifier {
 	}
 
 	r := &ResponseModifier{
-		resp: resp,
-		Body: &bytes.Buffer{},
+		Resp:        resp,
+		written:     -1,
+		initialized: true, // So we know if NewResponseModifer was called or not
+		Body:        &bytes.Buffer{},
 	}
 
 	return r
 }
 
 func (rm *ResponseModifier) Header() http.Header {
-	m := rm.resp.Header
+	m := rm.Resp.Header
 	if m == nil {
 		m = http.Header{}
-		rm.resp.Header = m
+		rm.Resp.Header = m
 	}
 	return m
 }
@@ -75,6 +80,11 @@ func (rm *ResponseModifier) Write(data []byte) (int, error) {
 		rm.Body.Write(data)
 	}
 
+	if rm.written < 0 {
+		rm.written = 0
+	}
+	rm.written += len(data)
+
 	return len(data), nil
 }
 
@@ -83,6 +93,12 @@ func (rm *ResponseModifier) WriteString(str string) (int, error) {
 	if rm.Body != nil {
 		rm.Body.WriteString(str)
 	}
+
+	if rm.written < 0 {
+		rm.written = 0
+	}
+	rm.written += len(str)
+
 	return len(str), nil
 }
 
@@ -98,16 +114,16 @@ func (rm *ResponseModifier) WriteHeader(code int) {
 	}
 
 	checkWriteHeaderCode(code)
-	rm.resp.StatusCode = code
+	rm.Resp.StatusCode = code
 	rm.wroteHeader = true
-	if rm.resp.Header == nil {
-		rm.resp.Header = http.Header{}
+	if rm.Resp.Header == nil {
+		rm.Resp.Header = http.Header{}
 	}
 }
 
 func (rm *ResponseModifier) Flush() {
 	if !rm.wroteHeader {
-		rm.WriteHeader(http.StatusOK)
+		rm.WriteHeader(rm.Resp.StatusCode)
 	}
 }
 
@@ -124,21 +140,26 @@ func parseContentLength(cl string) int64 {
 }
 
 func (rm *ResponseModifier) Result() *http.Response {
-	if rm.resp == nil {
+	if rm.Resp == nil {
 		return nil
 	}
 
-	rm.Flush()
-
-	res := rm.resp
+	res := rm.Resp
 
 	if res.StatusCode == 0 {
 		res.StatusCode = http.StatusOK
 	}
 
+	rm.Flush()
+
 	res.Status = fmt.Sprintf("%03d %s", res.StatusCode, http.StatusText(res.StatusCode))
 
 	if res.Body != nil {
+		// If nothing has been written yet as the response body, write the original response body to the result
+		if (!rm.initialized || rm.written < 0) && rm.Body != nil {
+			utils.CopyBuffer(rm.Body, res.Body, nil)
+		}
+
 		if _, ok := res.Body.(io.Closer); ok {
 			res.Body.Close()
 		}

@@ -35,7 +35,9 @@ func init() {
 }
 
 func (p *HiddenBridgeHandler) Init(opts *options.OptionValue) error {
-	p.BasePlugin.Init(opts)
+	if err := p.BasePlugin.Init(opts); err != nil {
+		return xerrors.Errorf("plugin: %s failed to initialize base: %w", p.Name(), err)
+	}
 	p.router.StrictSlash(true)
 	p.router.HandleFunc("/certs/", p.HandleCertsReq)
 

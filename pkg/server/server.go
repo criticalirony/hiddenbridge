@@ -51,6 +51,8 @@ type ProxyServer struct {
 	siteCerts map[string]*tls.Certificate
 
 	siteProxies map[string]*httputil.ReverseProxy
+
+	localIPs map[string]struct{}
 }
 
 func init() {
@@ -137,6 +139,9 @@ func (s *ProxyServer) Init(configFile string) (err error) {
 
 	// Initialize plugins
 	plugs := map[string]plugins.Plugin{}
+	protocols := []string{"https", "http"}
+	// Effectively a set from a map.. set.. just a map without values
+	portsSet := map[string]struct{}{}
 
 	for name, plugNewFn := range plugins.PluginBuilder {
 		plugOpts := config.Get(fmt.Sprintf("plugins[%s]", name))
@@ -144,13 +149,21 @@ func (s *ProxyServer) Init(configFile string) (err error) {
 			return xerrors.Errorf("%s contains no options for plugin %s", configFile, name)
 		}
 
-		plugin := plugNewFn()
-		plugin.Init(plugOpts)
+		plug := plugNewFn()
+		plug.Init(plugOpts)
 
-		hosts := plugOpts.Get("hosts").List()
+		hosts := plugOpts.Get("hosts").StringList()
 		for _, host := range hosts {
-			plugs[host.String()] = plugin
-			log.Info().Msgf("host %s registered to plugin %s", host.String(), name)
+			plugs[host] = plug
+		}
+
+		for _, protocol := range protocols {
+			ports := plug.Ports(protocol)
+			for _, port := range ports {
+				portsSet[port] = struct{}{}
+			}
+
+			log.Info().Msgf("hosts: %v %s ports: %v registered to plugin: %s", hosts, protocol, ports, plug.Name())
 		}
 	}
 
@@ -166,21 +179,8 @@ func (s *ProxyServer) Init(configFile string) (err error) {
 	} else {
 		listenIP = s.Opts.GetDefault("listen.ip", "").String() // Either it will use the IP address provided in the config or listen on all devices
 	}
+
 	s.Addr = listenIP
-
-	protocols := []string{"https", "http"}
-
-	// Effectively a set from a map.. set.. just a map without values
-	portsSet := map[string]struct{}{}
-	for _, protocol := range protocols {
-		for _, plug := range s.Plugins {
-			ports := plug.Ports(protocol)
-			for _, port := range ports {
-				portsSet[port] = struct{}{}
-			}
-		}
-	}
-
 	s.Ports = portsSet
 	certFile := s.Opts.Get("ca.cert").String()
 	keyFile := s.Opts.Get("ca.key").String()
@@ -193,7 +193,7 @@ func (s *ProxyServer) Init(configFile string) (err error) {
 
 	s.caCert = caCert
 	s.ctx = context.Background()
-
+	s.localIPs = utils.GetLocalIPs()
 	return nil
 }
 
@@ -368,6 +368,8 @@ func (s *ProxyServer) HandleRawConnection(clientConn net.Conn, hostURL *url.URL)
 					return false, err
 				}
 			} else {
+				// TODO check the recursive here
+
 				err = xerrors.Errorf("recursive request")
 				return false, xerrors.Errorf("%s server failed to request url %s: %w", s.Name, hostURL.String(), err)
 			}
@@ -561,10 +563,23 @@ func (s *ProxyServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		}
 
 		if proxyURL == nil && (*origReqURL == *reqURL) {
-			err = xerrors.Errorf("recursive request")
-			log.Error().Err(err).Msgf("%s server failed to request url %s", s.Name, reqURL.String())
-			http.Error(rw, xerrors.Errorf("%s server failed to request url %s: %w", s.Name, reqURL.String(), err).Error(), http.StatusMisdirectedRequest)
-			return
+			addrs, err := net.LookupHost(origReqURL.Hostname())
+			if err != nil {
+				err = xerrors.Errorf("internal hostname resolutuion failure")
+				log.Error().Err(err).Msgf("%s server failed to resolve request url %s", s.Name, reqURL.String())
+				http.Error(rw, xerrors.Errorf("%s server failed to resolve request url %s: %w", s.Name, reqURL.String(), err).Error(), http.StatusMisdirectedRequest)
+				return
+			}
+
+			for _, addr := range addrs {
+				if _, ok := s.localIPs[addr]; ok {
+					// We really do seem to have a recursive request
+					err = xerrors.Errorf("recursive request")
+					log.Error().Err(err).Msgf("%s server failed to request url %s", s.Name, reqURL.String())
+					http.Error(rw, xerrors.Errorf("%s server failed to request url %s: %w", s.Name, reqURL.String(), err).Error(), http.StatusMisdirectedRequest)
+					return
+				}
+			}
 		}
 
 		tlsConfig := &tls.Config{}

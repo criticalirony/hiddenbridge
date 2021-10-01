@@ -29,37 +29,6 @@ func init() {
 	}
 }
 
-func (p *GithubHandler) HandlesURL(hostURL *url.URL) bool {
-	hostPort := hostURL.Port()
-	ports := p.Ports(hostURL.Scheme)
-
-	for _, availablePort := range ports {
-		if hostPort == availablePort {
-			return true
-		}
-	}
-
-	var realHost string
-
-	key := fmt.Sprintf("host.real.%s", hostURL.Scheme)
-	realHost = p.Opts.Get(key).String()
-
-	if len(realHost) != 0 {
-		realURL, err := utils.NormalizeURL(realHost)
-		if err != nil {
-			log.Error().Err(err).Msgf("normalize url %s failure", realHost)
-			return false
-		}
-
-		if realURL.Host == hostURL.Host {
-			return true
-		}
-	}
-
-	log.Warn().Msgf("plugin %s does not support %s", p.Name(), hostURL)
-	return false
-}
-
 func (p *GithubHandler) RemoteURL(hostURL *url.URL) (*url.URL, error) {
 	return nil, nil // We need this connection to be proxied
 }
@@ -91,7 +60,6 @@ func (p *GithubHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*url.
 }
 
 func (p *GithubHandler) HandleResponse(rw http.ResponseWriter, req *http.Request, body io.ReadCloser, statusCode int) error {
-
 	if statusCode >= http.StatusMovedPermanently && statusCode < http.StatusBadRequest {
 		location := rw.Header().Get("location")
 		if len(location) == 0 {

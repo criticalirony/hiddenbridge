@@ -32,7 +32,9 @@ func init() {
 }
 
 func (p *FakeHostHandler) Init(opts *options.OptionValue) error {
-	p.BasePlugin.Init(opts)
+	if err := p.BasePlugin.Init(opts); err != nil {
+		return xerrors.Errorf("plugin: %s failed to initialize base: %w", p.Name(), err)
+	}
 	return nil
 }
 

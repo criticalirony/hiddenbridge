@@ -65,6 +65,9 @@ func (b *BasePlugin) Init(opts *options.OptionValue) error {
 	b.Certs = map[string]*tls.Certificate{}
 
 	for i, certFile := range certFiles {
+		// log.Debug().Msgf("Cert file: %s", certFile.String())
+		// log.Debug().Msgf("Key file: %s", keyFiles[i].String())
+
 		cert, err := tls.LoadX509KeyPair(certFile.String(), keyFiles[i].String())
 		if err != nil {
 			return xerrors.Errorf("failed to load X509 key pair cert '%s' key '%s': %w", certFiles, keyFiles, err)
@@ -80,15 +83,8 @@ func (b *BasePlugin) String() string {
 }
 
 func (b *BasePlugin) Ports(protocol string) []string {
-	var portOpts []options.OptionValue
-
 	key := fmt.Sprintf("ports.%s", protocol)
-	portOpts = b.Opts.Get(key).List()
-
-	ports := make([]string, len(portOpts))
-	for i, port := range portOpts {
-		ports[i] = port.String()
-	}
+	ports := b.Opts.Get(key).StringList()
 
 	return ports
 }

@@ -141,9 +141,11 @@ func URLFromRequest(req *http.Request) (*url.URL, error) {
 	if req.TLS != nil {
 		reqURL.Scheme = "https"
 		if req.Host != reqURL.Host {
-			req.Host = fmt.Sprintf("%s:443", reqURL.Hostname())
+			reqURL.Host = fmt.Sprintf("%s:443", reqURL.Hostname())
 		}
 	} // valid values for http will be set by default from NormalizeURL
+
+	req.Host = reqURL.Host
 
 	return reqURL, nil
 }
@@ -205,4 +207,25 @@ func CopyBuffer(dst io.Writer, src io.Reader, buf []byte) (int64, error) {
 			return written, rerr
 		}
 	}
+}
+
+// Get list of local IP Addresses
+// adapted from: https://stackoverflow.com/questions/23558425/how-do-i-get-the-local-ip-address-in-go
+func GetLocalIPs() map[string]struct{} {
+	result := map[string]struct{}{}
+
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		log.Error().Err(err).Msg("failed to get local interface addresses")
+		return map[string]struct{}{}
+	}
+
+	for _, address := range addrs {
+		// check the address type and if it is not a loopback the display it
+		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+			result[ipnet.IP.String()] = struct{}{}
+		}
+	}
+
+	return result
 }

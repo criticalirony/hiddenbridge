@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -54,6 +55,12 @@ func SaveKeys(cert []byte, privKey *rsa.PrivateKey, certFile, keyFile string) er
 	}
 
 	log.Info().Msgf("saved key file: %s", keyFile)
+
+	if _, err := tls.LoadX509KeyPair(certFile, keyFile); err != nil {
+		return xerrors.Errorf("certificate: %s private key: %s validation failure: %w", certFile, keyFile, err)
+	}
+
+	log.Info().Msgf("certificate: %s validated against private key: %s", certFile, keyFile)
 
 	return nil
 }

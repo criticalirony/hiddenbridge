@@ -68,3 +68,9 @@ A certificate is needed
 openssl req -x509 -newkey rsa:2048 -keyout python/testwebserver/key.pem -out python/testwebserver/cert.pem -days 365 -nodes
 ```
 
+## Privileged Ports
+Its possible to allow an unprivilged user to bind to privilged (low) ports
+```
+#> echo 'net.ipv4.ip_unprivileged_port_start=0' > /etc/sysctl.d/50-unprivileged-ports.conf
+#> sysctl --system
+```

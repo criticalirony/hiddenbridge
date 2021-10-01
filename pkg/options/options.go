@@ -376,6 +376,34 @@ func (o *OptionValue) List() []OptionValue {
 	return []OptionValue{*o} // Return self as a 1 item list
 }
 
+func (o *OptionValue) StringList() []string {
+	if o == nil || o.Value == nil {
+		return []string{}
+	}
+
+	optList := o.List()
+	vals := make([]string, len(optList))
+	for i, opt := range optList {
+		vals[i] = opt.String()
+	}
+
+	return vals
+}
+
+func (o *OptionValue) IntList() []int {
+	if o == nil || o.Value == nil {
+		return []int{}
+	}
+
+	optList := o.List()
+	vals := make([]int, len(optList))
+	for i, opt := range optList {
+		vals[i] = opt.Int()
+	}
+
+	return vals
+}
+
 func (o *OptionValue) Map() map[string]*OptionValue {
 	// We should still be able to cast a nil object to an empty map
 	if o == nil {

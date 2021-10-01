@@ -9,6 +9,7 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/rs/zerolog/log"
+	"golang.org/x/xerrors"
 )
 
 type GoProxyHandler struct {
@@ -31,7 +32,9 @@ func init() {
 }
 
 func (p *GoProxyHandler) Init(opts *options.OptionValue) error {
-	p.BasePlugin.Init(opts)
+	if err := p.BasePlugin.Init(opts); err != nil {
+		return xerrors.Errorf("plugin: %s failed to initialize base: %w", p.Name(), err)
+	}
 	p.router.StrictSlash(true)
 	// p.router.HandleFunc("/certs/", p.HandleCertsReq)
 
