@@ -24,6 +24,16 @@ func (e tlsUpgradeError) Error() string   { return xerrors.Errorf("tls upgrade: 
 func (e tlsUpgradeError) Timeout() bool   { return false }
 func (e tlsUpgradeError) Temporary() bool { return true } // This allows the outer server to continue serving requests
 
+type acceptConnectionError struct {
+	err error
+}
+
+func (e acceptConnectionError) Error() string {
+	return xerrors.Errorf("accept connection: %w", e.err).Error()
+}
+func (e acceptConnectionError) Timeout() bool   { return false }
+func (e acceptConnectionError) Temporary() bool { return true } // This allows the outer server to continue serving requests
+
 type Listener struct {
 	inner               net.Listener
 	HandleRawConnection func(clientConn net.Conn, hostURL *url.URL) (ok bool, err error)
@@ -52,8 +62,6 @@ func (l *Listener) Accept() (net.Conn, error) {
 		hdr []byte
 
 		hostURL *url.URL
-
-		secure = false
 	)
 
 	for {
@@ -84,14 +92,16 @@ func (l *Listener) Accept() (net.Conn, error) {
 				return nil, err
 			}
 
-			hostURL, err = utils.NormalizeURL(fmt.Sprintf("%s:%s", clientHello.ServerName, port))
-			if err != nil {
-				err = xerrors.Errorf("failed to normalize url: %w", err)
-				return nil, err
+			if clientHello.ServerName != "" {
+				hostURL, err = utils.NormalizeURL(fmt.Sprintf("%s:%s", clientHello.ServerName, port))
+				if err != nil {
+					err = &acceptConnectionError{err: xerrors.Errorf("failed to normalize url: %w", err)}
+					return nil, err
+				}
+			} else {
+				hostURL = &url.URL{}
 			}
-
 			hostURL.Scheme = "https"
-			secure = true
 		} else {
 			// This is a plain text HTTP message, find the HOST header
 			req, err := http.ReadRequest(bufio.NewReader(wrappedReader))
@@ -99,16 +109,19 @@ func (l *Listener) Accept() (net.Conn, error) {
 				return nil, err
 			}
 
-			hostURL, err = utils.NormalizeURL(req.Host)
-			if err != nil {
-				err = xerrors.Errorf("failed to normalize url: %w", err)
-				return nil, err
+			if req.Host != "" {
+				hostURL, err = utils.NormalizeURL(req.Host)
+				if err != nil {
+					err = xerrors.Errorf("failed to normalize url: %w", err)
+					return nil, err
+				}
+			} else {
+				hostURL = &url.URL{}
 			}
-
 			hostURL.Scheme = "http"
-			hostURL.Host = fmt.Sprintf("%s:%s", hostURL.Hostname(), port)
 		}
 
+		hostURL.Host = fmt.Sprintf("%s:%s", hostURL.Hostname(), port)
 		wrappedConn = NewMultiReaderConn(peekConn, &copiedBuffer)
 
 		if l.HandleRawConnection != nil {
@@ -134,7 +147,7 @@ func (l *Listener) Accept() (net.Conn, error) {
 		}
 	}
 
-	if secure {
+	if hostURL.Scheme == "https" {
 		// Upgrade connection to TLS
 		tlsConn, err := upgradeConnection(wrappedConn, l.GetCertificate)
 		if err != nil {

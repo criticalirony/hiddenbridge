@@ -107,7 +107,7 @@ func (rm *ResponseModifier) WriteHeader(code int) {
 
 func (rm *ResponseModifier) Flush() {
 	if !rm.wroteHeader {
-		rm.WriteHeader(200)
+		rm.WriteHeader(http.StatusOK)
 	}
 }
 
@@ -127,6 +127,8 @@ func (rm *ResponseModifier) Result() *http.Response {
 	if rm.resp == nil {
 		return nil
 	}
+
+	rm.Flush()
 
 	res := rm.resp
 

@@ -326,6 +326,16 @@ func (s *ProxyServer) DialProxyTimeout(network string, remoteAddress, proxy *url
 // TLS connections can be proxied here without having to MITM the connection; i.e. they can remain secure
 // Plain HTTP requests can be proxied here and directly copied between clients and remote hosts, increasing efficiency
 func (s *ProxyServer) HandleRawConnection(clientConn net.Conn, hostURL *url.URL) (ok bool, err error) {
+	if hostURL.Hostname() == "" {
+		// This can happen if we don't have SNI for TLS or a Host header in HTTP
+		hostname := s.Opts.Get("host.default").String()
+		if hostname == "" {
+			return false, xerrors.Errorf("%s server handle raw connection hostname not available", s.Name)
+		}
+
+		hostURL.Host = fmt.Sprintf("%s:%s", hostname, hostURL.Port())
+	}
+
 	plug := s.findPlugin(hostURL)
 	if plug == nil {
 		log.Warn().Msgf("%s server has no supporting plugins for %s", s.Name, hostURL.String())
@@ -387,23 +397,29 @@ func (s *ProxyServer) HandleRawConnection(clientConn net.Conn, hostURL *url.URL)
 	}
 }
 
-// GetCertificate returns an appropriate tls certificate base on information from the ClientHelloInfo
+// GetCertificate returns an appropriate tls certificate based on information from the ClientHelloInfo
 func (s *ProxyServer) GetCertificate(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	// Use hiddenbridge's CA certificate to dynamically generate and sign the server certificate for this request
-	// cache certificates for efficiency
+	// cache certificates for efficiency.
+	// Also allow plugins to provide their own certificate information
 	var (
 		err      error
 		ok       bool
 		siteCert *tls.Certificate
 	)
 
+	if chi.ServerName == "" {
+		chi.ServerName = s.Opts.Get("host.default").String() // No SNI information was received, lets try the default host
+	}
+
 	if siteCert, ok = s.siteCerts[chi.ServerName]; ok {
+		log.Debug().Msgf("%s server providing cached site cert %s", s.Name, chi.ServerName)
 		return siteCert, nil
 	}
 
 	hostURL, err := utils.NormalizeURL(chi.ServerName)
 	if err != nil {
-		return nil, xerrors.Errorf("%s server could not normalize host %s to url", s.Name, chi.ServerName)
+		return nil, xerrors.Errorf("%s server could not normalize host: %s to url", s.Name, chi.ServerName)
 	}
 
 	hostURL.Scheme = "https"
@@ -418,7 +434,7 @@ func (s *ProxyServer) GetCertificate(chi *tls.ClientHelloInfo) (*tls.Certificate
 		}
 
 		if siteCert != nil {
-			log.Debug().Msgf("%s plugin handled site cert %s request", s.Name, chi.ServerName)
+			log.Debug().Msgf("%s plugin handled site cert %s request", plug.Name(), chi.ServerName)
 			s.siteCerts[chi.ServerName] = siteCert
 			return siteCert, nil
 		}
@@ -436,6 +452,7 @@ func (s *ProxyServer) GetCertificate(chi *tls.ClientHelloInfo) (*tls.Certificate
 			Locality:      []string{"Default City"},
 			StreetAddress: []string{""},
 			PostalCode:    []string{""},
+			CommonName:    chi.ServerName,
 		},
 		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback, chi.Conn.LocalAddr().(*net.TCPAddr).IP},
 		DNSNames:     []string{chi.ServerName},
@@ -443,7 +460,7 @@ func (s *ProxyServer) GetCertificate(chi *tls.ClientHelloInfo) (*tls.Certificate
 		NotAfter:     time.Now().AddDate(10, 0, 0),
 		SubjectKeyId: []byte{1, 2, 3, 4, 6},
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
-		KeyUsage:     x509.KeyUsageDigitalSignature,
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment, // Very important Centos 7 needs "x509.KeyUsageKeyEncipherment"
 	}
 
 	certPrivKey, err := rsa.GenerateKey(rand.Reader, 2048)

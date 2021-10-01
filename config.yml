@@ -3,6 +3,7 @@ global:
   listen.dev: "ens33"
   ca.cert: &cacert "keys/hiddenbridgeCA.pem"
   ca.key: "keys/hiddenbridgeCA.key"
+  host.default: "hiddenbridge.org"
 
 plugins:
   hiddenbridgeorg:
