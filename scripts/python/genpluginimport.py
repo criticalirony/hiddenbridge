@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 
-import argparse
-import yaml
-import os
+try:
+    import argparse
+    import yaml
+    import os
+except ImportError as e:
+    print(f'import failure {e}')
+    print(f'try: python3 -m pip install -r scripts/python/requirements.txt')
+    exit(1)
 
 WORKING_DIR = os.path.abspath(os.path.normpath(os.path.dirname(__file__)))
 DEFAULT_OUTPUT = 'config.go'

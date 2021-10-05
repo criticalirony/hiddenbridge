@@ -17,10 +17,20 @@ hiddenbridge -config config.yml
 ```
 
 ## Building
+### Dependencies
 ```
 python3 -m pip install ./python/requirements.txt
-go generate
-go build
+export GOBIN=${HOME}/sdk/go1.17.1/bin/go
+```
+
+### The easy way
+```
+make
+```
+### The hard way
+```
+${GOBIN} generate
+${GOBIN} build
 ```
 
 ## Root CA
@@ -74,3 +84,4 @@ Its possible to allow an unprivilged user to bind to privilged (low) ports
 #> echo 'net.ipv4.ip_unprivileged_port_start=0' > /etc/sysctl.d/50-unprivileged-ports.conf
 #> sysctl --system
 ```
+

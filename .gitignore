@@ -1,5 +1,8 @@
 __pycache__
 hiddenbridge
+!hiddenbridge/
+signcert
+!signcert/
 keys/*
 __debug_bin
 

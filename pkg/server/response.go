@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hiddenbridge/pkg/utils"
 	"io"
+	"io/ioutil"
 	"net/http"
 	"net/textproto"
 	"strconv"
@@ -166,7 +167,7 @@ func (rm *ResponseModifier) Result() *http.Response {
 	}
 
 	if rm.Body != nil {
-		res.Body = io.NopCloser(bytes.NewReader(rm.Body.Bytes()))
+		res.Body = ioutil.NopCloser(bytes.NewReader(rm.Body.Bytes()))
 	} else {
 		res.Body = http.NoBody
 	}

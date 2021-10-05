@@ -287,9 +287,35 @@ func (o *OptionValue) String() string {
 		return ""
 	}
 
-	val, ok := o.Value.(string)
-	if !ok {
+	var val string
+
+	switch v := o.Value.(type) {
+	case string:
+		val = v
+	case *string:
+		val = *v
+	default:
 		val = fmt.Sprintf("%v", o.Value)
+	}
+
+	return val
+}
+
+func (o *OptionValue) Bool() bool {
+	if o == nil {
+		log.Warn().Msg("optionvalue is nil returning undefined value")
+		return false
+	}
+
+	var val bool
+
+	switch v := o.Value.(type) {
+	case bool:
+		val = v
+	case *bool:
+		val = *v
+	default:
+		val = false
 	}
 
 	return val

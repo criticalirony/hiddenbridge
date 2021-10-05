@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"flag"
+	"fmt"
 	"hiddenbridge/pkg/options"
 	"hiddenbridge/pkg/utils"
 	"io/ioutil"
@@ -31,7 +32,7 @@ func SetupLogging(level string) {
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr}).Level(logLevel).With().Timestamp().Logger().With().Caller().Logger()
 }
 
-func SaveKeys(cert []byte, privKey *rsa.PrivateKey, certFile, keyFile string) error {
+func SaveKeys(cert []byte, privKey *rsa.PrivateKey, certFile, keyFile string, nosave bool) error {
 	certPEM := new(bytes.Buffer)
 	pem.Encode(certPEM, &pem.Block{
 		Type:  "CERTIFICATE",
@@ -44,28 +45,37 @@ func SaveKeys(cert []byte, privKey *rsa.PrivateKey, certFile, keyFile string) er
 		Bytes: x509.MarshalPKCS1PrivateKey(privKey),
 	})
 
-	if err := os.WriteFile(certFile, certPEM.Bytes(), 0644); err != nil {
-		return xerrors.Errorf("failed to write certificate to: %s: %w", certFile, err)
+	if !nosave {
+		if err := ioutil.WriteFile(certFile, certPEM.Bytes(), 0644); err != nil {
+			return xerrors.Errorf("failed to write certificate to: %s: %w", certFile, err)
+		}
+		log.Info().Msgf("saved cert file: %s", certFile)
+	} else {
+		fmt.Print(string(certPEM.Bytes()[:]))
 	}
 
-	log.Info().Msgf("saved cert file: %s", certFile)
+	if !nosave {
+		if err := ioutil.WriteFile(keyFile, privKeyPEM.Bytes(), 0644); err != nil {
+			return xerrors.Errorf("failed to write private key to: %s: %w", keyFile, err)
+		}
 
-	if err := os.WriteFile(keyFile, privKeyPEM.Bytes(), 0644); err != nil {
-		return xerrors.Errorf("failed to write private key to: %s: %w", keyFile, err)
+		log.Info().Msgf("saved key file: %s", keyFile)
+	} else {
+		fmt.Print(string(privKeyPEM.Bytes()[:]))
 	}
 
-	log.Info().Msgf("saved key file: %s", keyFile)
+	if !nosave {
+		if _, err := tls.LoadX509KeyPair(certFile, keyFile); err != nil {
+			return xerrors.Errorf("certificate: %s private key: %s validation failure: %w", certFile, keyFile, err)
+		}
 
-	if _, err := tls.LoadX509KeyPair(certFile, keyFile); err != nil {
-		return xerrors.Errorf("certificate: %s private key: %s validation failure: %w", certFile, keyFile, err)
+		log.Info().Msgf("certificate: %s validated against private key: %s", certFile, keyFile)
 	}
-
-	log.Info().Msgf("certificate: %s validated against private key: %s", certFile, keyFile)
 
 	return nil
 }
 
-func NewSignedCert(sans []string, caCert []byte, caPrivKey *rsa.PrivateKey) ([]byte, *rsa.PrivateKey, error) {
+func NewSignedCert(sans []string, parentCert []byte, parentPrivKey *rsa.PrivateKey) ([]byte, *rsa.PrivateKey, error) {
 	if len(sans) == 0 {
 		return nil, nil, xerrors.Errorf("failed to generate certiificate no host names provided")
 	}
@@ -78,6 +88,14 @@ func NewSignedCert(sans []string, caCert []byte, caPrivKey *rsa.PrivateKey) ([]b
 		if len(san) == 0 {
 			return nil, nil, xerrors.Errorf("invalid/empty hostname supplied")
 		}
+	}
+
+	var isCA bool
+	if parentCert == nil && parentPrivKey == nil {
+		isCA = true
+	} else if parentCert == nil || parentPrivKey == nil {
+		// They both need to be nil or valid, not one is nil and the other valid
+		return nil, nil, xerrors.Errorf("one of parent cert/private key is invalid")
 	}
 
 	// from https://shaneutt.com/blog/golang-ca-and-signed-cert-go/
@@ -96,6 +114,7 @@ func NewSignedCert(sans []string, caCert []byte, caPrivKey *rsa.PrivateKey) ([]b
 		DNSNames:     append([]string{}, sans...),
 		NotBefore:    time.Now().AddDate(0, 0, -7),
 		NotAfter:     time.Now().AddDate(10, 0, 0),
+		IsCA:         isCA,
 		SubjectKeyId: []byte{1, 2, 3, 4, 6},
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment, // Very important Centos 7 needs "x509.KeyUsageKeyEncipherment"
@@ -108,18 +127,27 @@ func NewSignedCert(sans []string, caCert []byte, caPrivKey *rsa.PrivateKey) ([]b
 
 	log.Info().Msgf("private key for host: %s generated", sans[0])
 
-	parentCert, err := x509.ParseCertificate(caCert)
-	if err != nil {
-		return nil, nil, xerrors.Errorf("parsing parent certificate failure: %w", err)
+	var parentX509Cert *x509.Certificate
+	if !isCA {
+		parentX509Cert, err = x509.ParseCertificate(parentCert)
+		if err != nil {
+			return nil, nil, xerrors.Errorf("parsing parent certificate failure: %w", err)
+		}
 	}
 
-	siteCert, err := x509.CreateCertificate(rand.Reader, cert, parentCert, &sitePrivKey.PublicKey, caPrivKey)
+	var siteCert []byte
+	if !isCA {
+		siteCert, err = x509.CreateCertificate(rand.Reader, cert, parentX509Cert, &sitePrivKey.PublicKey, parentPrivKey)
+	} else {
+		siteCert, err = x509.CreateCertificate(rand.Reader, cert, cert, &sitePrivKey.PublicKey, sitePrivKey)
+	}
+
 	if err != nil {
 		err = xerrors.Errorf("create site certificate failure: %w", err)
 		return nil, nil, err
 	}
 
-	log.Info().Msgf("certificate for host: %s generated", sans[0])
+	log.Info().Msgf("certificate for host: %s (CA: %v) generated", sans[0], isCA)
 
 	return siteCert, sitePrivKey, nil
 }
@@ -157,25 +185,13 @@ func main() {
 
 	flagSet := utils.NewFlagSet("", flag.ExitOnError)
 
-	flagSet.Func("v", "Verbose level", func(s string) error {
-		return opts.Set("cli.verbose", s)
-	})
-
-	flagSet.Func("out", "Out cert file", func(s string) error {
-		return opts.Set("cli.out.cert", s)
-	})
-
-	flagSet.Func("out-key", "Out cert key", func(s string) error {
-		return opts.Set("cli.out.key", s) // Certificate out file
-	})
-
-	flagSet.Func("in", "CA cert file", func(s string) error {
-		return opts.Set("cli.in.cert", s) // CA in certificate file
-	})
-
-	flagSet.Func("in-key", "CA key file", func(s string) error {
-		return opts.Set("cli.in.key", s) // CA in key file
-	})
+	opts.Set("cli.verbose", flagSet.String("v", "", "Verbose level"))
+	opts.Set("cli.out.cert", flagSet.String("out", "", "Out cert file"))
+	opts.Set("cli.out.key", flagSet.String("out-key", "", "Out cert key"))
+	opts.Set("cli.in.cert", flagSet.String("in", "", "CA cert file"))
+	opts.Set("cli.in.key", flagSet.String("in-key", "", "CA key file"))
+	opts.Set("cli.out.isca", flagSet.Bool("ca", false, "Create self signed CA cert and key"))
+	opts.Set("cli.out.nosave", flagSet.Bool("no-save", false, "Don't save the cert and keys, just dump to stdout"))
 
 	flagSet.Func("n", "Subect Alt Name (host). Can be used multiple times.", func(s string) error {
 		valList := opts.GetDefault("cli.host", nil).List()
@@ -191,27 +207,32 @@ func main() {
 
 	log.Info().Msg("signcert: creating signed certificates the easy way")
 
-	hostOpts := opts.GetDefault("cli.host", nil).List()
-	if len(hostOpts) == 0 {
+	hostList := opts.GetDefault("cli.host", nil).StringList()
+	if len(hostList) == 0 {
 		log.Panic().Msgf("At least one \"-n\" <alt name (host)> must be provided")
 	}
 
-	hostList := make([]string, len(hostOpts))
-	for i, hostOpt := range hostOpts {
-		hostList[i] = hostOpt.String()
+	var (
+		parentCert    []byte
+		parentPrivKey *rsa.PrivateKey
+	)
+
+	if !opts.GetDefault("cli.out.isca", false).Bool() {
+		parentCert, parentPrivKey, err = LoadKeys(opts.GetDefault("cli.in.cert", "").String(), opts.GetDefault("cli.in.key", "").String())
+		if err != nil {
+			log.Panic().Err(err).Msg("failed to load CA cert and key")
+		}
 	}
 
-	caCert, caPrivKey, err := LoadKeys(opts.GetDefault("cli.in.cert", "").String(), opts.GetDefault("cli.in.key", "").String())
-	if err != nil {
-		log.Panic().Err(err).Msg("failed to load CA cert and key")
-	}
-
-	siteCert, sitePrivKey, err := NewSignedCert(hostList, caCert, caPrivKey)
+	siteCert, sitePrivKey, err := NewSignedCert(hostList, parentCert, parentPrivKey)
 	if err != nil {
 		log.Panic().Err(err).Msgf("failed to generate new signed cert for hosts: %v", hostList)
 	}
 
-	if err := SaveKeys(siteCert, sitePrivKey, opts.GetDefault("cli.out.cert", "").String(), opts.GetDefault("cli.out.key", "").String()); err != nil {
+	if err := SaveKeys(siteCert, sitePrivKey,
+		opts.GetDefault("cli.out.cert", "").String(),
+		opts.GetDefault("cli.out.key", "").String(),
+		opts.GetDefault("cli.out.nosave", false).Bool()); err != nil {
 		log.Panic().Err(err).Msgf("failed to save signed cert and key files")
 	}
 }
