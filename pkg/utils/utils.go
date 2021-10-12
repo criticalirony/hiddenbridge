@@ -147,7 +147,38 @@ func URLFromRequest(req *http.Request) (*url.URL, error) {
 
 	req.Host = reqURL.Host
 
+	reqURL.User = req.URL.User
+	reqURL.Path = req.URL.Path
+	reqURL.RawPath = req.URL.RawPath
+	reqURL.ForceQuery = req.URL.ForceQuery
+	reqURL.RawQuery = req.URL.RawQuery
+	reqURL.Fragment = req.URL.Fragment
+	reqURL.RawFragment = req.URL.RawFragment
+
 	return reqURL, nil
+}
+
+func TargetFromURL(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+
+	var buf strings.Builder
+	path := u.EscapedPath()
+	if path != "" && path[0] != '/' && u.Host != "" {
+		buf.WriteByte('/')
+	}
+	buf.WriteString(path)
+
+	if u.ForceQuery || u.RawQuery != "" {
+		buf.WriteByte('?')
+		buf.WriteString(u.RawQuery)
+	}
+	if u.Fragment != "" {
+		buf.WriteByte('#')
+		buf.WriteString(u.EscapedFragment())
+	}
+	return buf.String()
 }
 
 // Query the runtime for the caller's package
@@ -186,7 +217,7 @@ func CopyBuffer(dst io.Writer, src io.Reader, buf []byte) (int64, error) {
 	for {
 		nr, rerr := src.Read(buf)
 		if rerr != nil && rerr != io.EOF && rerr != context.Canceled {
-			log.Error().Err(rerr).Msgf("read error during buffer copy")
+			return -1, xerrors.Errorf("read error during buffer copy: %w", rerr)
 		}
 		if nr > 0 {
 			nw, werr := dst.Write(buf[:nr])

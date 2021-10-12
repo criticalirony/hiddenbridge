@@ -34,7 +34,7 @@ var (
 	ClosedChan chan struct{}
 )
 
-type ProxyServer struct {
+type BridgeServer struct {
 	Name    string
 	Opts    *options.OptionValue
 	Plugins map[string]plugins.Plugin
@@ -52,6 +52,8 @@ type ProxyServer struct {
 
 	siteProxies map[string]*httputil.ReverseProxy
 
+	// Keeps track of IPs that point back to this server
+	// used to prevent recursive requests
 	localIPs map[string]struct{}
 }
 
@@ -60,8 +62,8 @@ func init() {
 	close(ClosedChan)
 }
 
-func NewProxyServer() *ProxyServer {
-	return &ProxyServer{
+func NewBridgeServer() *BridgeServer {
+	return &BridgeServer{
 		Name:        "hiddenbridge",
 		Started:     make(chan struct{}),
 		wg:          sync.WaitGroup{},
@@ -71,7 +73,7 @@ func NewProxyServer() *ProxyServer {
 	}
 }
 
-func (s *ProxyServer) parseYamlConfig(yamConfigFile string) (opts *options.OptionValue, err error) {
+func (s *BridgeServer) parseYamlConfig(yamConfigFile string) (opts *options.OptionValue, err error) {
 
 	var config interface{}
 	var yamlFile []byte
@@ -96,7 +98,7 @@ func (s *ProxyServer) parseYamlConfig(yamConfigFile string) (opts *options.Optio
 	return
 }
 
-func (s *ProxyServer) findPlugin(hostURL *url.URL) plugins.Plugin {
+func (s *BridgeServer) findPlugin(hostURL *url.URL) plugins.Plugin {
 	var (
 		ok   bool
 		plug plugins.Plugin
@@ -123,7 +125,7 @@ func (s *ProxyServer) findPlugin(hostURL *url.URL) plugins.Plugin {
 	return nil
 }
 
-func (s *ProxyServer) Init(configFile string) (err error) {
+func (s *BridgeServer) Init(configFile string) (err error) {
 	var config *options.OptionValue
 
 	if strings.HasSuffix(configFile, ".yml") || strings.HasSuffix(configFile, ".yaml") {
@@ -194,10 +196,17 @@ func (s *ProxyServer) Init(configFile string) (err error) {
 	s.caCert = caCert
 	s.ctx = context.Background()
 	s.localIPs = utils.GetLocalIPs()
+
+	// Also include external IPs
+	externalIPs := s.Opts.GetDefault("ips.external", nil).StringList()
+	for _, ip := range externalIPs {
+		s.localIPs[ip] = struct{}{}
+	}
+
 	return nil
 }
 
-func (s *ProxyServer) Start() (err error) {
+func (s *BridgeServer) Start() (err error) {
 
 	hsErrChan := make(chan error, len(s.Ports))
 
@@ -252,7 +261,7 @@ func (s *ProxyServer) Start() (err error) {
 	return allErrors
 }
 
-func (s *ProxyServer) Stop() error {
+func (s *BridgeServer) Stop() error {
 	wait := 15 * time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
@@ -265,11 +274,11 @@ func (s *ProxyServer) Stop() error {
 	return nil
 }
 
-func (s *ProxyServer) IsStarted() chan struct{} {
+func (s *BridgeServer) IsStarted() chan struct{} {
 	return s.Started
 }
 
-func (s *ProxyServer) DialProxyTimeout(network string, remoteAddress, proxy *url.URL, timeout time.Duration) (net.Conn, error) {
+func (s *BridgeServer) DialProxyTimeout(network string, remoteAddress, proxy *url.URL, timeout time.Duration) (net.Conn, error) {
 	proxyConn, err := net.DialTimeout(network, proxy.Host, timeout)
 	if err != nil {
 		err = xerrors.Errorf("dial proxy %s timeout %s", proxy.String(), timeout.String())
@@ -325,7 +334,7 @@ func (s *ProxyServer) DialProxyTimeout(network string, remoteAddress, proxy *url
 // This allows the oppurtunity to do a direct transfer between hosts without any interception of the data.
 // TLS connections can be proxied here without having to MITM the connection; i.e. they can remain secure
 // Plain HTTP requests can be proxied here and directly copied between clients and remote hosts, increasing efficiency
-func (s *ProxyServer) HandleRawConnection(clientConn net.Conn, hostURL *url.URL) (ok bool, err error) {
+func (s *BridgeServer) HandleRawConnection(clientConn net.Conn, hostURL *url.URL) (ok bool, err error) {
 	if hostURL.Hostname() == "" {
 		// This can happen if we don't have SNI for TLS or a Host header in HTTP
 		hostname := s.Opts.Get("host.default").String()
@@ -400,7 +409,7 @@ func (s *ProxyServer) HandleRawConnection(clientConn net.Conn, hostURL *url.URL)
 }
 
 // GetCertificate returns an appropriate tls certificate based on information from the ClientHelloInfo
-func (s *ProxyServer) GetCertificate(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
+func (s *BridgeServer) GetCertificate(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	// Use hiddenbridge's CA certificate to dynamically generate and sign the server certificate for this request
 	// cache certificates for efficiency.
 	// Also allow plugins to provide their own certificate information
@@ -507,10 +516,10 @@ func (s *ProxyServer) GetCertificate(chi *tls.ClientHelloInfo) (*tls.Certificate
 }
 
 // ServeHTTP handles the request and returns the response to client
-func (s *ProxyServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+func (s *BridgeServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	var (
 		plug         plugins.Plugin
-		origReqURL   *url.URL
+		origReqURL   url.URL
 		curentReqURL url.URL
 		currentPlug  plugins.Plugin
 	)
@@ -520,8 +529,8 @@ func (s *ProxyServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		http.Error(rw, xerrors.Errorf("%s server failed to parse request url %s: %w", s.Name, req.Host, err).Error(), http.StatusInternalServerError)
 		return
 	}
-	origReqURL = reqURL
-	curentReqURL = *origReqURL
+	origReqURL = *reqURL
+	curentReqURL = origReqURL
 
 	for {
 		plug = s.findPlugin(&curentReqURL)
@@ -542,8 +551,8 @@ func (s *ProxyServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			req.Host = reqURL.Host
 		}
 
-		if reqURL == nil || *reqURL == curentReqURL {
-			// reqURL is now nil or didn't change we are now ready to process the response
+		if reqURL == nil || reqURL.Host == curentReqURL.Host {
+			// reqURL is now nil or host hasn't changed we are now ready to process the response
 			break
 		}
 
@@ -562,7 +571,7 @@ func (s *ProxyServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		if proxyURL == nil && (*origReqURL == *reqURL) {
+		if proxyURL == nil && (origReqURL.Host == reqURL.Host) {
 			addrs, err := net.LookupHost(origReqURL.Hostname())
 			if err != nil {
 				err = xerrors.Errorf("internal hostname resolutuion failure")
@@ -589,7 +598,14 @@ func (s *ProxyServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 		rp, ok := s.siteProxies[reqURL.Host]
 		if !ok {
-			rp = httputil.NewSingleHostReverseProxy(reqURL)
+			revProxy := &url.URL{
+				Scheme: reqURL.Scheme,
+				Host:   reqURL.Host,
+			}
+			reqURL.Scheme = ""
+			reqURL.Host = ""
+
+			rp = httputil.NewSingleHostReverseProxy(revProxy)
 			rp.Transport = &http.Transport{
 				Proxy:           http.ProxyURL(proxyURL),
 				TLSClientConfig: tlsConfig,
@@ -598,6 +614,8 @@ func (s *ProxyServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			s.siteProxies[reqURL.Host] = rp
 		}
 
+		req.URL = reqURL
+		// req.RequestURI = utils.TargetFromURL(reqURL)
 		rp.ServeHTTP(rw, req)
 		return
 	}
@@ -631,7 +649,7 @@ func (s *ProxyServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func (s *ProxyServer) ModifyResponse(resp *http.Response) error {
+func (s *BridgeServer) ModifyResponse(resp *http.Response) error {
 	var (
 		err    error
 		reqURL *url.URL
@@ -654,13 +672,18 @@ func (s *ProxyServer) ModifyResponse(resp *http.Response) error {
 		return nil
 	}
 
+	defer resp.Body.Close() // Make sure the response body has been closed
+
 	modResponseWriter := NewResponseModifier(resp)
 
 	if err = plug.HandleResponse(modResponseWriter, req, resp.Body, resp.StatusCode); err != nil {
 		return xerrors.Errorf("failed to handle response for request %s: %w", reqURL.String(), err)
 	}
 
-	resp = modResponseWriter.Result()
+	if resp, err = modResponseWriter.Result(); err != nil {
+		return xerrors.Errorf("failed to get modified response result: %w", err)
+	}
+
 	if resp.ProtoAtLeast(1, 1) {
 		resp.Header.Set("Connection", "close")
 	}
@@ -668,7 +691,7 @@ func (s *ProxyServer) ModifyResponse(resp *http.Response) error {
 	return err
 }
 
-func (s *ProxyServer) ErrorHandler(rw http.ResponseWriter, req *http.Request, err error) {
+func (s *BridgeServer) ErrorHandler(rw http.ResponseWriter, req *http.Request, err error) {
 	reqURL, parseErr := utils.URLFromRequest(req)
 
 	if parseErr != nil {

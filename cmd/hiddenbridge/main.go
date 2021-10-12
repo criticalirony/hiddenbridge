@@ -54,7 +54,7 @@ func main() {
 	log.Info().Msg("Hidden Bridge - Servers for when you have none.")
 	log.Info().Msgf("Build Version: %v Date: %v", build.Data().Version, build.Data().Date)
 
-	pSvr := server.NewProxyServer()
+	pSvr := server.NewBridgeServer()
 	if err := pSvr.Init(filename); err != nil {
 		log.Panic().Err(err).Msgf("failed to initialize %s server", pSvr.Name)
 	}

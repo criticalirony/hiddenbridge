@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/rs/zerolog/log"
 	"golang.org/x/xerrors"
@@ -33,30 +34,61 @@ func (p *GithubHandler) RemoteURL(hostURL *url.URL) (*url.URL, error) {
 	return nil, nil // We need this connection to be proxied
 }
 
-func (p *GithubHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, error) {
+func (p *GithubHandler) findRepoNameIdx(path string) (offset, length int) {
+	// var serviceIdx int
+	repoPaths := []string{"info", "HEAD", "refs", "packed-refs", "objects", "branches", "hooks", "config", "description"}
 
+	pathParts := strings.Split(path, "/")
+	if len(pathParts) > 0 && pathParts[0] == "" {
+		pathParts = pathParts[1:]
+	}
+
+	for i, pathPart := range pathParts {
+		for _, repoPath := range repoPaths {
+			if pathPart == repoPath {
+				if i > 0 {
+					repoName := pathParts[i-1]
+					return strings.Index(path, repoName), len(repoName)
+				}
+
+				return -1, 0
+			}
+		}
+	}
+
+	return -1, 0
+}
+
+func (p *GithubHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, error) {
 	var (
-		realHost string
+		upstream string
 	)
 
-	if reqURL.Scheme == "https" {
-		realHost = p.Opts.Get("host.real.https").String()
-	} else {
-		realHost = p.Opts.Get("host.real.http").String()
-	}
+	log.Debug().Msgf("orig request: %s", reqURL.String())
 
-	if len(realHost) == 0 {
-		log.Warn().Msgf("%s plugin did not find real url config now using %s", p.Name(), reqURL.Host)
-		return reqURL, nil
-	}
-
-	realURL, err := utils.NormalizeURL(realHost)
+	upstream = p.Opts.Get("host.upstream").String()
+	upstreamURL, err := utils.NormalizeURL(upstream)
 	if err != nil {
-		err = xerrors.Errorf("normalize url %s failure: %w", realHost, err)
-		return nil, err
+		return nil, xerrors.Errorf("failed to normalize url %s: %w", upstream, err)
 	}
 
-	return realURL, nil
+	reqURL.Scheme = upstreamURL.Scheme
+	reqURL.Host = upstreamURL.Host
+
+	repoNameOff, repoNameLen := p.findRepoNameIdx(reqURL.Path)
+	if repoNameOff >= 0 {
+		repoName := reqURL.Path[repoNameOff : repoNameOff+repoNameLen]
+		if !strings.HasPrefix(repoName, ".git") {
+			repoName = repoName + ".git"
+		}
+
+		reqURL.Path = reqURL.Path[:repoNameOff] + repoName + reqURL.Path[repoNameOff+repoNameLen:]
+	}
+
+	reqURL.Path = upstreamURL.Path + reqURL.Path
+
+	log.Debug().Msgf("new request: %s", reqURL.String())
+	return reqURL, nil
 }
 
 func (p *GithubHandler) HandleResponse(rw http.ResponseWriter, req *http.Request, body io.ReadCloser, statusCode int) error {
@@ -86,6 +118,17 @@ func (p *GithubHandler) HandleResponse(rw http.ResponseWriter, req *http.Request
 		locationURL.Host = fmt.Sprintf("%s:%s", locationURL.Hostname(), port)
 		rw.Header().Set("location", locationURL.String()) // Update redirected to a local listening port
 	}
+
+	// data := make([]byte, 10)
+	// _, err := body.Read(data)
+	// data, err := ioutil.ReadAll(body)
+	// if err != nil {
+	// 	return xerrors.Errorf("failure to read response body: %w", err)
+	// }
+	// defer body.Close()
+
+	// log.Debug().Msgf("%v", rw.Header())
+	// log.Debug().Msgf(string(data))
 
 	return nil
 }

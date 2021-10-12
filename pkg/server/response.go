@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"hiddenbridge/pkg/utils"
 	"io"
@@ -11,10 +12,12 @@ import (
 	"strconv"
 
 	"github.com/rs/zerolog/log"
+	"golang.org/x/xerrors"
 )
 
 type ResponseModifier struct {
-	Body *bytes.Buffer
+	Body            *bytes.Buffer
+	origRespBodyBuf *bytes.Buffer
 
 	Resp        *http.Response
 	initialized bool
@@ -27,6 +30,9 @@ func NewResponseModifier(resp *http.Response) *ResponseModifier {
 		resp = &http.Response{}
 	}
 
+	origRespBodyBuf := &bytes.Buffer{}
+	resp.Body = utils.TeeCloser(resp.Body, origRespBodyBuf)
+
 	if len(resp.Proto) == 0 || resp.ProtoMajor == 0 {
 		resp.Proto = "HTTP/1.1"
 		resp.ProtoMajor = 1
@@ -34,10 +40,11 @@ func NewResponseModifier(resp *http.Response) *ResponseModifier {
 	}
 
 	r := &ResponseModifier{
-		Resp:        resp,
-		written:     -1,
-		initialized: true, // So we know if NewResponseModifer was called or not
-		Body:        &bytes.Buffer{},
+		Resp:            resp,
+		written:         -1,
+		initialized:     true, // So we know if NewResponseModifer was called or not
+		Body:            &bytes.Buffer{},
+		origRespBodyBuf: origRespBodyBuf,
 	}
 
 	return r
@@ -140,9 +147,9 @@ func parseContentLength(cl string) int64 {
 	return int64(n)
 }
 
-func (rm *ResponseModifier) Result() *http.Response {
+func (rm *ResponseModifier) Result() (*http.Response, error) {
 	if rm.Resp == nil {
-		return nil
+		return nil, xerrors.Errorf("no response result available")
 	}
 
 	res := rm.Resp
@@ -157,8 +164,18 @@ func (rm *ResponseModifier) Result() *http.Response {
 
 	if res.Body != nil {
 		// If nothing has been written yet as the response body, write the original response body to the result
-		if (!rm.initialized || rm.written < 0) && rm.Body != nil {
-			utils.CopyBuffer(rm.Body, res.Body, nil)
+		if !rm.initialized || rm.written < 0 {
+			if _, err := utils.CopyBuffer(rm.Body, rm.origRespBodyBuf, nil); err != nil {
+				return nil, xerrors.Errorf("failed to copy original response buffer: %w", err)
+			}
+
+			if _, err := res.Body.Read(nil); err == nil {
+				if _, err := utils.CopyBuffer(rm.Body, res.Body, nil); err != nil {
+					return nil, xerrors.Errorf("failed to copy original response buffer: %w", err)
+				}
+			} else if !errors.Is(err, io.EOF) && err.Error() != "http: read on closed response body" {
+				return nil, xerrors.Errorf("unexpected error reading response body: %w", err)
+			}
 		}
 
 		if _, ok := res.Body.(io.Closer); ok {
@@ -176,5 +193,5 @@ func (rm *ResponseModifier) Result() *http.Response {
 
 	// Not supporting trailers - headers after body
 
-	return res
+	return res, nil
 }
