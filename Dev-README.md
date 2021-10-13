@@ -46,9 +46,9 @@ proxy_plugins:
 #### Required key/values
 Each plugin must provide the following under ```proxy_plugins``` section:
 
-```plugin_name:``` The name of the plugin. This MUST be the same as that in the plugin's source file
+```pluginName_:``` The name of the plugin. This MUST be the same as that in the plugin's source file
 
-Under ```plugin_name```:
+Under ```pluginName_```:
 * ```hosts``` The list of hosts that this plugin will handle
 * ```ports.https``` The list of secure/TLS/HTTPS ports that this plugin should accept requests on
     * These ports tell Hidden Bridge which ports to bind to and listen on for secure TLS connections

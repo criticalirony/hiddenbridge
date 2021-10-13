@@ -12,7 +12,9 @@ import (
 	"golang.org/x/xerrors"
 )
 
-var optionValueName = reflect.TypeOf((*OptionValue)(nil)).Elem().String()
+var (
+	optionValueName = reflect.TypeOf((*OptionValue)(nil)).Elem().String()
+)
 
 type OptionValue struct {
 	Value interface{}
@@ -188,13 +190,14 @@ func (o *OptionValue) Get(key string) *OptionValue {
 	}
 
 	if o.Value == nil {
-		log.Warn().Str("key", key).Msg("key has not been assigned")
+		log.Warn().Msgf("key: %s has not been assigned", key)
 		return nil
 	}
 
 	res := o.get(key)
 	if res == nil {
-		log.Warn().Str("key", key).Msg("key not found")
+		log.Warn().Msgf("key: %s not found", key)
+		return nil
 	}
 
 	return res

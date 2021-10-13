@@ -78,7 +78,7 @@ func (p *GithubHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*url.
 	repoNameOff, repoNameLen := p.findRepoNameIdx(reqURL.Path)
 	if repoNameOff >= 0 {
 		repoName := reqURL.Path[repoNameOff : repoNameOff+repoNameLen]
-		if !strings.HasPrefix(repoName, ".git") {
+		if !strings.HasSuffix(repoName, ".git") {
 			repoName = repoName + ".git"
 		}
 
@@ -91,9 +91,9 @@ func (p *GithubHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*url.
 	return reqURL, nil
 }
 
-func (p *GithubHandler) HandleResponse(rw http.ResponseWriter, req *http.Request, body io.ReadCloser, statusCode int) error {
+func (p *GithubHandler) HandleResponse(w http.ResponseWriter, r *http.Request, body io.ReadCloser, statusCode int) error {
 	if statusCode >= http.StatusMovedPermanently && statusCode < http.StatusBadRequest {
-		location := rw.Header().Get("location")
+		location := w.Header().Get("location")
 		if len(location) == 0 {
 			return nil
 		}
@@ -116,19 +116,8 @@ func (p *GithubHandler) HandleResponse(rw http.ResponseWriter, req *http.Request
 		}
 
 		locationURL.Host = fmt.Sprintf("%s:%s", locationURL.Hostname(), port)
-		rw.Header().Set("location", locationURL.String()) // Update redirected to a local listening port
+		w.Header().Set("location", locationURL.String()) // Update redirected to a local listening port
 	}
-
-	// data := make([]byte, 10)
-	// _, err := body.Read(data)
-	// data, err := ioutil.ReadAll(body)
-	// if err != nil {
-	// 	return xerrors.Errorf("failure to read response body: %w", err)
-	// }
-	// defer body.Close()
-
-	// log.Debug().Msgf("%v", rw.Header())
-	// log.Debug().Msgf(string(data))
 
 	return nil
 }

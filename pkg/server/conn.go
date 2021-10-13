@@ -87,7 +87,7 @@ func (conn ROConn) SetWriteDeadline(t time.Time) error { return nil }
 // connLooksLikeHTTP reports whether a buffer might containt a plaintext HTTP request.
 func connLooksLikeHTTP(buf []byte) bool {
 	switch string(buf[:5]) {
-	case "GET /", "HEAD ", "POST ", "PUT /", "OPTIO":
+	case "GET /", "HEAD ", "POST ", "PUT /", "OPTIO", "PROPF":
 		return true
 	}
 	return false

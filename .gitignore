@@ -5,4 +5,4 @@ signcert
 !signcert/
 keys/*
 __debug_bin
-
+build_versions/

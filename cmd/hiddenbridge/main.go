@@ -1,3 +1,5 @@
+//go:generate ../../scripts/python/genpluginimport.py ../../config.yml -o plugin_config.go
+
 package main
 
 import (

@@ -26,7 +26,7 @@ func init() {
 
 	plugins.PluginBuilder[pluginName] = func() plugins.Plugin {
 		h := FakeHostHandler{}
-		h.Name_ = pluginName
+		h.BasePlugin.Name_ = pluginName
 		return &h
 	}
 }
@@ -81,14 +81,14 @@ func (p *FakeHostHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*ur
 	return directURL, err
 }
 
-func (p *FakeHostHandler) HandleResponse(rw http.ResponseWriter, req *http.Request, body io.ReadCloser, statusCode int) error {
+func (p *FakeHostHandler) HandleResponse(w http.ResponseWriter, r *http.Request, body io.ReadCloser, statusCode int) error {
 	// Test to check that we can change the body of a response
 	var bodyBytes []byte
 	var err error
 
-	reqURL, err := utils.NormalizeURL(req.URL.String())
+	reqURL, err := utils.NormalizeURL(r.URL.String())
 	if err != nil {
-		return xerrors.Errorf("failed to normailze request url %s", req.URL.String())
+		return xerrors.Errorf("failed to normailze request url %s", r.URL.String())
 	}
 
 	if bodyBytes, err = ioutil.ReadAll(body); err != nil {
@@ -96,7 +96,7 @@ func (p *FakeHostHandler) HandleResponse(rw http.ResponseWriter, req *http.Reque
 	}
 	body.Close()
 	bodyBytes = bytes.Replace(bodyBytes, []byte("Served to you from a server far, far, away."), []byte("Served to you from a dish that's best served cold."), -1)
-	if _, err = rw.Write(bodyBytes); err != nil {
+	if _, err = w.Write(bodyBytes); err != nil {
 		return xerrors.Errorf("failed to write response body for request %s: %w", reqURL.String(), err)
 	}
 

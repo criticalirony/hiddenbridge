@@ -234,7 +234,10 @@ func (s *BridgeServer) Start() (err error) {
 			l.GetCertificate = s.GetCertificate
 
 			log.Debug().Msgf("%s serving requests on %s", s.Name, hs.Addr)
-			hs.Serve(l)
+			err = hs.Serve(l)
+			if err != nil {
+				log.Error().Err(err).Msgf("%s server listening on %s has failed", s.Name, hs.Addr)
+			}
 			log.Debug().Msgf("%s server listening on %s has shutdown", s.Name, hs.Addr)
 			hsErrChan <- nil
 		}(hs, hsErrChan)
@@ -516,7 +519,7 @@ func (s *BridgeServer) GetCertificate(chi *tls.ClientHelloInfo) (*tls.Certificat
 }
 
 // ServeHTTP handles the request and returns the response to client
-func (s *BridgeServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+func (s *BridgeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var (
 		plug         plugins.Plugin
 		origReqURL   url.URL
@@ -524,9 +527,9 @@ func (s *BridgeServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		currentPlug  plugins.Plugin
 	)
 
-	reqURL, err := utils.URLFromRequest(req)
+	reqURL, err := utils.URLFromRequest(r)
 	if err != nil {
-		http.Error(rw, xerrors.Errorf("%s server failed to parse request url %s: %w", s.Name, req.Host, err).Error(), http.StatusInternalServerError)
+		http.Error(w, xerrors.Errorf("%s server failed to parse request url %s: %w", s.Name, r.Host, err).Error(), http.StatusInternalServerError)
 		return
 	}
 	origReqURL = *reqURL
@@ -541,14 +544,14 @@ func (s *BridgeServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 		currentPlug = plug
 
-		reqURL, err = plug.HandleRequest(reqURL, req)
+		reqURL, err = plug.HandleRequest(reqURL, r)
 		if err != nil {
-			http.Error(rw, xerrors.Errorf("%s server %s plugin failed to handle url %s: %w", s.Name, plug.Name(), req.Host, err).Error(), http.StatusInternalServerError)
+			http.Error(w, xerrors.Errorf("%s server %s plugin failed to handle url %s: %w", s.Name, plug.Name(), r.Host, err).Error(), http.StatusInternalServerError)
 			return
 		}
 
 		if reqURL != nil {
-			req.Host = reqURL.Host
+			r.Host = reqURL.Host
 		}
 
 		if reqURL == nil || reqURL.Host == curentReqURL.Host {
@@ -560,14 +563,14 @@ func (s *BridgeServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	if currentPlug == nil {
-		http.Error(rw, fmt.Sprintf("%s server does not support url %s", s.Name, curentReqURL.String()), http.StatusNotFound)
+		http.Error(w, fmt.Sprintf("%s server does not support url %s", s.Name, curentReqURL.String()), http.StatusNotFound)
 		return
 	}
 
 	if reqURL != nil {
 		proxyURL, err := currentPlug.ProxyURL(reqURL)
 		if err != nil {
-			http.Error(rw, xerrors.Errorf("%s server %s plugin failed to check proxy url %s: %w", s.Name, plug.Name(), reqURL.String(), err).Error(), http.StatusInternalServerError)
+			http.Error(w, xerrors.Errorf("%s server %s plugin failed to check proxy url %s: %w", s.Name, plug.Name(), reqURL.String(), err).Error(), http.StatusInternalServerError)
 			return
 		}
 
@@ -576,7 +579,7 @@ func (s *BridgeServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			if err != nil {
 				err = xerrors.Errorf("internal hostname resolutuion failure")
 				log.Error().Err(err).Msgf("%s server failed to resolve request url %s", s.Name, reqURL.String())
-				http.Error(rw, xerrors.Errorf("%s server failed to resolve request url %s: %w", s.Name, reqURL.String(), err).Error(), http.StatusMisdirectedRequest)
+				http.Error(w, xerrors.Errorf("%s server failed to resolve request url %s: %w", s.Name, reqURL.String(), err).Error(), http.StatusMisdirectedRequest)
 				return
 			}
 
@@ -585,14 +588,14 @@ func (s *BridgeServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 					// We really do seem to have a recursive request
 					err = xerrors.Errorf("recursive request")
 					log.Error().Err(err).Msgf("%s server failed to request url %s", s.Name, reqURL.String())
-					http.Error(rw, xerrors.Errorf("%s server failed to request url %s: %w", s.Name, reqURL.String(), err).Error(), http.StatusMisdirectedRequest)
+					http.Error(w, xerrors.Errorf("%s server failed to request url %s: %w", s.Name, reqURL.String(), err).Error(), http.StatusMisdirectedRequest)
 					return
 				}
 			}
 		}
 
 		tlsConfig := &tls.Config{}
-		if req.TLS != nil {
+		if r.TLS != nil {
 			tlsConfig.InsecureSkipVerify = true
 		}
 
@@ -614,36 +617,36 @@ func (s *BridgeServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			s.siteProxies[reqURL.Host] = rp
 		}
 
-		req.URL = reqURL
+		r.URL = reqURL
 		// req.RequestURI = utils.TargetFromURL(reqURL)
-		rp.ServeHTTP(rw, req)
+		rp.ServeHTTP(w, r)
 		return
 	}
 
 	resp := &http.Response{
-		Request: req,
+		Request: r,
 	}
 
 	if err = s.ModifyResponse(resp); err != nil {
-		s.ErrorHandler(rw, req, err)
+		s.ErrorHandler(w, r, err)
 		return
 	}
 
 	// Delete existing headers
-	rw.Header().Del("Content-Type")
-	rw.Header().Del("Connection")
+	w.Header().Del("Content-Type")
+	w.Header().Del("Connection")
 
 	// Copy headers
 	for k, vv := range resp.Header {
 		for _, v := range vv {
-			rw.Header().Add(k, v)
+			w.Header().Add(k, v)
 		}
 	}
 
-	rw.WriteHeader(resp.StatusCode)
+	w.WriteHeader(resp.StatusCode)
 
 	if resp.Body != http.NoBody {
-		if _, err := utils.CopyBuffer(rw, resp.Body, nil); err != nil {
+		if _, err := utils.CopyBuffer(w, resp.Body, nil); err != nil {
 			log.Error().Err(err).Msgf("failed to send response body for request %s", reqURL.String())
 		}
 	}
@@ -655,13 +658,13 @@ func (s *BridgeServer) ModifyResponse(resp *http.Response) error {
 		reqURL *url.URL
 	)
 
-	req := resp.Request
+	r := resp.Request
 
 	var plug plugins.Plugin
-	if req != nil {
-		reqURL, err = utils.URLFromRequest(req)
+	if r != nil {
+		reqURL, err = utils.URLFromRequest(r)
 		if err != nil {
-			return xerrors.Errorf("%s server failed to parse url %s: %w", s.Name, req.Host, err)
+			return xerrors.Errorf("%s server failed to parse url %s: %w", s.Name, r.Host, err)
 		}
 
 		plug = s.findPlugin(reqURL)
@@ -672,11 +675,9 @@ func (s *BridgeServer) ModifyResponse(resp *http.Response) error {
 		return nil
 	}
 
-	defer resp.Body.Close() // Make sure the response body has been closed
-
 	modResponseWriter := NewResponseModifier(resp)
 
-	if err = plug.HandleResponse(modResponseWriter, req, resp.Body, resp.StatusCode); err != nil {
+	if err = plug.HandleResponse(modResponseWriter, r, resp.Body, resp.StatusCode); err != nil {
 		return xerrors.Errorf("failed to handle response for request %s: %w", reqURL.String(), err)
 	}
 
@@ -691,15 +692,15 @@ func (s *BridgeServer) ModifyResponse(resp *http.Response) error {
 	return err
 }
 
-func (s *BridgeServer) ErrorHandler(rw http.ResponseWriter, req *http.Request, err error) {
-	reqURL, parseErr := utils.URLFromRequest(req)
+func (s *BridgeServer) ErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
+	reqURL, parseErr := utils.URLFromRequest(r)
 
 	if parseErr != nil {
-		log.Error().Err(parseErr).Msgf("%s server failure to parse url from req %+v during response error handling", s.Name, req)
-		http.Error(rw, xerrors.Errorf("%s server internal error during error handling of request and response processing: %w", s.Name, parseErr).Error(), http.StatusInternalServerError)
+		log.Error().Err(parseErr).Msgf("%s server failure to parse url from req %+v during response error handling", s.Name, r)
+		http.Error(w, xerrors.Errorf("%s server internal error during error handling of request and response processing: %w", s.Name, parseErr).Error(), http.StatusInternalServerError)
 		return
 	}
 
 	log.Error().Err(err).Msgf("%s server failure to handle proxying of request %s and processing response", s.Name, reqURL.String())
-	http.Error(rw, xerrors.Errorf("%s server failure to handle proxying of request %s and processing response: %w", s.Name, reqURL.String(), err).Error(), http.StatusInternalServerError)
+	http.Error(w, xerrors.Errorf("%s server failure to handle proxying of request %s and processing response: %w", s.Name, reqURL.String(), err).Error(), http.StatusInternalServerError)
 }

@@ -130,30 +130,30 @@ func NormalizeURL(rawURL string) (*url.URL, error) {
 	return u, nil
 }
 
-func URLFromRequest(req *http.Request) (*url.URL, error) {
-	reqURL, err := NormalizeURL(req.Host)
+func URLFromRequest(r *http.Request) (*url.URL, error) {
+	reqURL, err := NormalizeURL(r.Host)
 	if err != nil {
-		log.Error().Err(err).Msgf("failed to get normalized url %s", req.Host)
-		err = xerrors.Errorf("failed to get normalized url %s: %w", req.Host, err)
+		log.Error().Err(err).Msgf("failed to get normalized url %s", r.Host)
+		err = xerrors.Errorf("failed to get normalized url %s: %w", r.Host, err)
 		return nil, err
 	}
 
-	if req.TLS != nil {
+	if r.TLS != nil {
 		reqURL.Scheme = "https"
-		if req.Host != reqURL.Host {
+		if r.Host != reqURL.Host {
 			reqURL.Host = fmt.Sprintf("%s:443", reqURL.Hostname())
 		}
 	} // valid values for http will be set by default from NormalizeURL
 
-	req.Host = reqURL.Host
+	r.Host = reqURL.Host
 
-	reqURL.User = req.URL.User
-	reqURL.Path = req.URL.Path
-	reqURL.RawPath = req.URL.RawPath
-	reqURL.ForceQuery = req.URL.ForceQuery
-	reqURL.RawQuery = req.URL.RawQuery
-	reqURL.Fragment = req.URL.Fragment
-	reqURL.RawFragment = req.URL.RawFragment
+	reqURL.User = r.URL.User
+	reqURL.Path = r.URL.Path
+	reqURL.RawPath = r.URL.RawPath
+	reqURL.ForceQuery = r.URL.ForceQuery
+	reqURL.RawQuery = r.URL.RawQuery
+	reqURL.Fragment = r.URL.Fragment
+	reqURL.RawFragment = r.URL.RawFragment
 
 	return reqURL, nil
 }

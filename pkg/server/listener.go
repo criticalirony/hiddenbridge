@@ -24,16 +24,6 @@ func (e tlsUpgradeError) Error() string   { return xerrors.Errorf("tls upgrade: 
 func (e tlsUpgradeError) Timeout() bool   { return false }
 func (e tlsUpgradeError) Temporary() bool { return true } // This allows the outer server to continue serving requests
 
-type acceptConnectionError struct {
-	err error
-}
-
-func (e acceptConnectionError) Error() string {
-	return xerrors.Errorf("accept connection: %w", e.err).Error()
-}
-func (e acceptConnectionError) Timeout() bool   { return false }
-func (e acceptConnectionError) Temporary() bool { return true } // This allows the outer server to continue serving requests
-
 type Listener struct {
 	inner               net.Listener
 	HandleRawConnection func(clientConn net.Conn, hostURL *url.URL) (ok bool, err error)
@@ -57,6 +47,7 @@ func (l *Listener) Accept() (net.Conn, error) {
 
 	var (
 		err         error
+		innerConn   net.Conn
 		wrappedConn net.Conn
 
 		hdr []byte
@@ -64,8 +55,9 @@ func (l *Listener) Accept() (net.Conn, error) {
 		hostURL *url.URL
 	)
 
+acceptLoop:
 	for {
-		innerConn, err := l.inner.Accept()
+		innerConn, err = l.inner.Accept()
 		if err != nil {
 			return nil, err
 		}
@@ -73,7 +65,8 @@ func (l *Listener) Accept() (net.Conn, error) {
 		peekConn := NewPeekableConn(innerConn)
 		hdr, err = peekConn.Peek(5)
 		if err != nil {
-			return nil, err
+			err = xerrors.Errorf("failed to initialize peekable conn: %w", err)
+			break
 		}
 
 		log.Debug().Msgf("Accepted Connection: %s -> %s", innerConn.RemoteAddr().String(), innerConn.LocalAddr().String())
@@ -86,34 +79,38 @@ func (l *Listener) Accept() (net.Conn, error) {
 		var clientHello *tls.ClientHelloInfo
 
 		if !connLooksLikeHTTP(hdr) {
+			log.Debug().Msgf("peek header: %s", hdr)
+
 			// This is most probably a TLS connection - check for a ClientHello message
 			clientHello, err = ReadClientHello(bufio.NewReader(wrappedReader))
 			if err != nil {
-				return nil, err
+				err = xerrors.Errorf("failed to read client hello: %w", err)
+				break
 			}
 
 			if clientHello.ServerName != "" {
 				hostURL, err = utils.NormalizeURL(fmt.Sprintf("%s:%s", clientHello.ServerName, port))
 				if err != nil {
-					err = &acceptConnectionError{err: xerrors.Errorf("failed to normalize url: %w", err)}
-					return nil, err
+					err = xerrors.Errorf("failed to normalize url: %w", err)
+					break
 				}
 			} else {
 				hostURL = &url.URL{}
 			}
 			hostURL.Scheme = "https"
 		} else {
+			var r *http.Request
+
 			// This is a plain text HTTP message, find the HOST header
-			req, err := http.ReadRequest(bufio.NewReader(wrappedReader))
+			r, err = http.ReadRequest(bufio.NewReader(wrappedReader))
 			if err != nil {
-				return nil, err
+				break
 			}
 
-			if req.Host != "" {
-				hostURL, err = utils.NormalizeURL(req.Host)
-				if err != nil {
+			if r.Host != "" {
+				if hostURL, err = utils.NormalizeURL(r.Host); err != nil {
 					err = xerrors.Errorf("failed to normalize url: %w", err)
-					return nil, err
+					break
 				}
 			} else {
 				hostURL = &url.URL{}
@@ -145,6 +142,21 @@ func (l *Listener) Accept() (net.Conn, error) {
 			log.Warn().Msg("no registered connection handler connection will be intercepted")
 			break
 		}
+	}
+
+	if err != nil {
+		log.Error().Err(err).Msgf("listener internal error: %+v", err)
+		if wrappedConn != nil {
+			wrappedConn.Close()
+		} else if innerConn != nil {
+			innerConn.Close()
+		}
+
+		// Reset and try again
+		wrappedConn = nil
+		innerConn = nil
+		err = nil
+		goto acceptLoop
 	}
 
 	if hostURL.Scheme == "https" {

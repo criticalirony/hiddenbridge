@@ -72,9 +72,9 @@ func (p *HiddenBridgeHandler) HandleCertsReq(rw http.ResponseWriter, r *http.Req
 	rw.Write(p.cert)
 }
 
-func (p *HiddenBridgeHandler) HandleResponse(rw http.ResponseWriter, req *http.Request, body io.ReadCloser, statusCode int) error {
+func (p *HiddenBridgeHandler) HandleResponse(w http.ResponseWriter, r *http.Request, body io.ReadCloser, statusCode int) error {
 
-	p.router.ServeHTTP(rw, req)
+	p.router.ServeHTTP(w, r)
 
 	return nil // by default plugins will not change the response
 }

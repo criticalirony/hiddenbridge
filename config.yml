@@ -6,6 +6,14 @@ global:
   host.default: "hiddenbridge.org"
 
 plugins:
+  gitcache:
+    hosts:
+      - gitcache.org
+    ports.https:
+      - 443
+    ports.http:
+      - 80
+    cache.path: "/tmp/gitcache/cache"
   hiddenbridgeorg:
     hosts:
       - hiddenbridge.org
@@ -22,8 +30,8 @@ plugins:
       - 443
     ports.http:
       - 80
-    host.real.https: "https://github.com:443"
-    host.real.http: "http://github.com:80"
+    host.upstream: "http://192.168.226.139/github"
+    # host.real.http: "http://github.com:80"
     # host.real.proxy: "http://192.168.226.134:8888"
 
   goproxy:

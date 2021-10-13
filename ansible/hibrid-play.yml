@@ -120,7 +120,7 @@
   tasks:
     - name: Configure dns
       nmcli:
-        conn_name: "{{ hostvars[inventory_hostname]['ansible_facts']['default_ipv4']['interface'] }}"
+        connName_: "{{ hostvars[inventory_hostname]['ansible_facts']['default_ipv4']['interface'] }}"
         type: ethernet
         dns4:
           - "{{ hostvars['bridge.lan']['ansible_facts']['default_ipv4']['address'] }}"

@@ -3,10 +3,31 @@
 Here are some notes about how the developers of Hidden Bridge have set up some of their testing
 
 ## Docker
+### Install
 ```
 sudo yum install docker-ce docker-ce-cli containerd.io
 sudo systemctl enable docker
 sudo systemctl start docker
+```
+
+### Query
+```
+sudo docker ps -a
+sudo docker container list
+sudo docker volume list
+```
+
+### Cleanup
+```
+sudo docker volume prune -f
+sudo docker container prune -f
+sudo docker image prune -a -f
+
+sudo -i
+docker rm $(docker ps -qa)
+docker rmi -f $(docker images -qa)
+docker volume rm $(docker volume ls -qf)
+docker network rm $(docker network ls -q)
 ```
 
 ## Gitlab
@@ -34,6 +55,12 @@ sudo stop gitlab
 sudo docker run --detach   --hostname gitlab.example.com   --publish 443:443 --publish 80:80 --publish 22:22   --name gitlab   --restart always   --volume $GITLAB_HOME/config:/etc/gitlab:Z   --volume $GITLAB_HOME/logs:/var/log/gitlab:Z   --volume $GITLAB_HOME/data:/var/opt/gitlab:Z gitlab/gitlab-ce:latest
 ```
 
+## Bitbucket
+```
+sudo docker volume create --name bitbucketVolume
+sudo docker run -v bitbucketVolume:/var/atlassian/application-data/bitbucket --name="bitbucket" -d -p 7990:7990 -p 7999:7999 atlassian/bitbucket
+```
+
 ## Dumb Git (Nginx)
 ```
 sudo mkdir -p /srv/web/sites/github /srv/web/etc
@@ -46,7 +73,7 @@ sudo vi  /srv/web/etc/nginx/conf.d/default.conf
 server {
     listen       80;
     listen  [::]:80;
-    server_name  localhost;
+    serverName_  localhost;
 
     root   /usr/share/nginx/html;
 

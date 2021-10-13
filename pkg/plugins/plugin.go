@@ -28,7 +28,7 @@ type Plugin interface {
 	ProxyURL(hostURL *url.URL) (*url.URL, error)
 	HandleCertificate(site string) (*tls.Certificate, error)
 	HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, error)
-	HandleResponse(rw http.ResponseWriter, req *http.Request, body io.ReadCloser, statusCode int) error
+	HandleResponse(w http.ResponseWriter, r *http.Request, body io.ReadCloser, statusCode int) error
 }
 
 func init() {
@@ -42,17 +42,21 @@ type BasePlugin struct {
 	Certs map[string]*tls.Certificate
 }
 
-func (b *BasePlugin) Name() string {
-	return b.Name_
+func (p *BasePlugin) Name() string {
+	return p.Name_
 }
 
-func (b *BasePlugin) Init(opts *options.OptionValue) error {
-	b.Opts = opts
+func (p *BasePlugin) Init(opts *options.OptionValue) error {
+	p.Opts = opts
 
 	// Expected config if a plugin wants to host its own certificate
-	certFiles := b.Opts.GetDefault("site.certs", nil).List()
-	keyFiles := b.Opts.GetDefault("site.keys", nil).List()
-	hosts := b.Opts.Get("hosts").List()
+	certFiles := p.Opts.GetDefault("site.certs", nil).List()
+	keyFiles := p.Opts.GetDefault("site.keys", nil).List()
+	hosts := p.Opts.Get("hosts").List()
+
+	if len(hosts) == 0 {
+		return xerrors.Errorf("no configured hosts for plugin")
+	}
 
 	if len(certFiles) != len(keyFiles) {
 		return xerrors.Errorf("invalid 1:1 mapping of X509 key pairs and certs")
@@ -62,7 +66,7 @@ func (b *BasePlugin) Init(opts *options.OptionValue) error {
 		return xerrors.Errorf("invalid 1:1 mapping of hosts and and certs")
 	}
 
-	b.Certs = map[string]*tls.Certificate{}
+	p.Certs = map[string]*tls.Certificate{}
 
 	for i, certFile := range certFiles {
 		// log.Debug().Msgf("Cert file: %s", certFile.String())
@@ -72,25 +76,25 @@ func (b *BasePlugin) Init(opts *options.OptionValue) error {
 		if err != nil {
 			return xerrors.Errorf("failed to load X509 key pair cert '%s' key '%s': %w", certFiles, keyFiles, err)
 		}
-		b.Certs[hosts[i].String()] = &cert
+		p.Certs[hosts[i].String()] = &cert
 	}
 
 	return nil
 }
 
-func (b *BasePlugin) String() string {
-	return fmt.Sprintf("%s=", b.Name_)
+func (p *BasePlugin) String() string {
+	return fmt.Sprintf("%s=", p.Name_)
 }
 
-func (b *BasePlugin) Ports(protocol string) []string {
+func (p *BasePlugin) Ports(protocol string) []string {
 	key := fmt.Sprintf("ports.%s", protocol)
-	ports := b.Opts.Get(key).StringList()
+	ports := p.Opts.Get(key).StringList()
 
 	return ports
 }
 
-func (b *BasePlugin) HandleCertificate(site string) (*tls.Certificate, error) {
-	if cert, ok := b.Certs[site]; ok {
+func (p *BasePlugin) HandleCertificate(site string) (*tls.Certificate, error) {
+	if cert, ok := p.Certs[site]; ok {
 		return cert, nil // by default plugins will return a site certificate if they have one
 	}
 
@@ -98,24 +102,24 @@ func (b *BasePlugin) HandleCertificate(site string) (*tls.Certificate, error) {
 }
 
 // Thes functions can be overriden in the plugin for custom behavior
-func (b *BasePlugin) HandlesURL(hostURL *url.URL) bool {
+func (p *BasePlugin) HandlesURL(hostURL *url.URL) bool {
 	return true // by default plugins handle everything - this can be overriden by the plugin
 }
 
-func (b *BasePlugin) RemoteURL(hostURL *url.URL) (*url.URL, error) {
+func (p *BasePlugin) RemoteURL(hostURL *url.URL) (*url.URL, error) {
 	// by default plugins will be expected to handle an intercepted connection
 	// the base plugin can't support a direct, remote connection (nothing to connect to)
 	return nil, nil
 }
 
-func (b *BasePlugin) ProxyURL(hostURL *url.URL) (*url.URL, error) {
+func (p *BasePlugin) ProxyURL(hostURL *url.URL) (*url.URL, error) {
 	return nil, nil // by default plugins will not require a proxy for their requests
 }
 
-func (b *BasePlugin) HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, error) {
+func (p *BasePlugin) HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, error) {
 	return nil, nil // by default plugins will not round trip the request
 }
 
-func (b *BasePlugin) HandleResponse(rw http.ResponseWriter, reqURL *url.URL, body io.ReadCloser, statusCode int) error {
+func (p *BasePlugin) HandleResponse(w http.ResponseWriter, r *http.Request, body io.ReadCloser, statusCode int) error {
 	return nil // by default plugins will not change the response
 }

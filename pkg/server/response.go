@@ -31,7 +31,10 @@ func NewResponseModifier(resp *http.Response) *ResponseModifier {
 	}
 
 	origRespBodyBuf := &bytes.Buffer{}
-	resp.Body = utils.TeeCloser(resp.Body, origRespBodyBuf)
+
+	if resp.Body != nil {
+		resp.Body = utils.TeeCloser(resp.Body, origRespBodyBuf)
+	}
 
 	if len(resp.Proto) == 0 || resp.ProtoMajor == 0 {
 		resp.Proto = "HTTP/1.1"

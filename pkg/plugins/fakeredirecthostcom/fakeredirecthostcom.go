@@ -61,24 +61,24 @@ func (p *FakeRedirectHostHandler) ProxyURL(hostURL *url.URL) (*url.URL, error) {
 	return nil, nil
 }
 
-func (p *FakeRedirectHostHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, error) {
+func (p *FakeRedirectHostHandler) HandleRequest(rURL *url.URL, r *http.Request) (*url.URL, error) {
 
-	path := req.URL.Path
+	path := r.URL.Path
 	if strings.Contains(path, "/custom") {
 		return nil, nil
 	}
 
-	nextURL := *reqURL
-	nextURL.Host = fmt.Sprintf("%s:%s", "fakehost.com", reqURL.Port())
+	nextURL := *rURL
+	nextURL.Host = fmt.Sprintf("%s:%s", "fakehost.com", rURL.Port())
 
 	return &nextURL, nil
 }
 
-func (p *FakeRedirectHostHandler) HandleResponse(rw http.ResponseWriter, req *http.Request, body io.ReadCloser, statusCode int) error {
+func (p *FakeRedirectHostHandler) HandleResponse(w http.ResponseWriter, r *http.Request, body io.ReadCloser, statusCode int) error {
 	respBody := "<HTML><HEAD><TITLE>Custom response</TITLE></HEAD><BODY>This here be a custom response!</BODY></HTML>\r\n"
 
-	if _, err := io.WriteString(rw, respBody); err != nil {
-		return xerrors.Errorf("failed to write response body for req %s: %w", req.URL.String(), err)
+	if _, err := io.WriteString(w, respBody); err != nil {
+		return xerrors.Errorf("failed to write response body for req %s: %w", r.URL.String(), err)
 	}
 	return nil
 }
