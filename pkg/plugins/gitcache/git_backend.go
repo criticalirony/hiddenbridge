@@ -3,24 +3,38 @@ package gitcache
 import (
 	"crypto/sha1"
 	"encoding/hex"
+	"fmt"
+	"hiddenbridge/pkg/utils"
 	"net/http"
+	"net/url"
 	"sync"
 
-	"github.com/gorilla/mux"
 	"github.com/rs/zerolog/log"
 )
 
 type contextKey int
-
-const (
-	gitRepoRootKey contextKey = iota
-)
 
 type GitService struct {
 	Path    string
 	Method  string
 	Handler func(w http.ResponseWriter, r *http.Request)
 }
+
+type GitRequestContext struct {
+	repoRoot string
+	upstream *url.URL
+	status   int
+	err      error
+}
+
+type GitRepoContext struct {
+	hash string
+	task *utils.Task
+}
+
+const (
+	gitCacheKey contextKey = iota
+)
 
 var (
 	gitServices = []GitService{
@@ -39,32 +53,37 @@ var (
 		{`/git-receive-pack`, http.MethodPost, serviceRPC},
 	}
 
-	repoContext sync.Map
+	repoContexts sync.Map
 )
 
 func init() {
-	repoContext = sync.Map{}
+	repoContexts = sync.Map{}
 }
 
-func getRepoHash(host, path string) string {
-	repoKey := host + path
+func getRepoContext(host, path string) *GitRepoContext {
+	contextKey := host + path
 
 	var (
-		repoHash string
+		repoContext *GitRepoContext
 	)
 
-	rawHash, ok := repoContext.Load(repoKey)
+	rawContext, ok := repoContexts.Load(contextKey)
 	if ok {
-		repoHash = rawHash.(string)
-		log.Debug().Msgf("using cached repo key: %s", repoHash)
+		repoContext = rawContext.(*GitRepoContext)
+		log.Debug().Msgf("using cached repo context: %s", contextKey)
 	} else {
-		rawHash := sha1.Sum([]byte(repoKey))
-		repoHash = hex.EncodeToString(rawHash[:])
-		log.Debug().Msgf("using generated repo key: %s", repoHash)
-		repoContext.Store(repoKey, repoHash)
+		rawHash := sha1.Sum([]byte(contextKey))
+
+		repoContext = &GitRepoContext{
+			hash: hex.EncodeToString(rawHash[:]),
+			task: utils.NewTask("", nil),
+		}
+
+		log.Debug().Msgf("using generated repo key: %s", contextKey)
+		repoContexts.Store(contextKey, repoContext)
 	}
 
-	return repoHash
+	return repoContext
 }
 
 func hdrsNoCache(w http.ResponseWriter) {
@@ -78,26 +97,53 @@ func getHead(w http.ResponseWriter, r *http.Request) {
 }
 
 func getInfoRefs(w http.ResponseWriter, r *http.Request) {
+	var (
+		ok             bool
+		requestContext *GitRequestContext
+	)
 	// gitcache.org:80/golang/dl.git/info/refs?service=git-upload-pack (client fetch/clone)
 	// gitcache.org:80/golang/dl.git/info/refs?service=git-receive-pack (client push)
 
-	repoRoot := r.Context().Value(gitRepoRootKey).(string)
-	log.Debug().Msgf("repo root: %s", repoRoot)
-
-	basePath := mux.Vars(r)["path"]
-	repoHash := getRepoHash(r.Host, basePath)
-	_ = repoHash
-
-	hdrsNoCache(w)
-
-	serviceName := r.URL.Query().Get("service")
-	if serviceName != "" {
-		// Do something here
-	} else {
-		// Send file as plain data
+	if requestContext, ok = r.Context().Value(gitCacheKey).(*GitRequestContext); !ok {
+		log.Error().Msgf("unable to retrieve git cache context for this request: %s", r.URL.String())
+		if w != nil {
+			http.Error(w, fmt.Sprintf("unable to retrieve git cache context for this request: %s", r.URL.String()), http.StatusInternalServerError)
+		}
+		return
 	}
 
-	http.NotFound(w, r)
+	log.Debug().Msgf("repo root: %s", requestContext.repoRoot)
+
+	repoContext := getRepoContext(r.Host, r.URL.Path)
+	_ = repoContext
+
+	// repoContext := getRepoContext(r.Host, r.URL.Path)
+	// repoRoot, ok := r.Context().Value(gitCacheKey).(*GitRepoContext)
+	// if !ok {
+	// 	log.Warn().Msgf("request context does not contain git repo data")
+	// }
+
+	// _ = repoRoot
+
+	// log.Debug().Msgf("repo root: %s", repoRoot)
+
+	// basePath := mux.Vars(r)["path"]
+	// repoHash := getRepoContext(r.Host, basePath)
+	// _ = repoHash
+
+	// hdrsNoCache(w)
+
+	// serviceName := r.URL.Query().Get("service")
+	// if serviceName != "" {
+	// 	// Do something here
+	// } else {
+	// 	// Send file as plain data
+	// }
+
+	requestContext.status = http.StatusNotFound
+	if w != nil {
+		http.NotFound(w, r)
+	}
 }
 
 func getTextFile(w http.ResponseWriter, r *http.Request) {

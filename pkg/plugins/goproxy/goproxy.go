@@ -41,7 +41,7 @@ func (p *GoProxyHandler) Init(opts *options.OptionValue) error {
 	return nil
 }
 
-func (p *GoProxyHandler) HandleResponse(w http.ResponseWriter, r *http.Request, body io.ReadCloser, statusCode int) error {
+func (p *GoProxyHandler) HandleResponse(w http.ResponseWriter, r *http.Request, body io.Reader, statusCode int) error {
 	p.router.ServeHTTP(w, r)
 	return nil // by default plugins will not change the response
 }

@@ -34,6 +34,12 @@ var (
 	ClosedChan chan struct{}
 )
 
+type contextKey int
+
+const (
+	pluginListKey contextKey = iota
+)
+
 type BridgeServer struct {
 	Name    string
 	Opts    *options.OptionValue
@@ -42,8 +48,7 @@ type BridgeServer struct {
 	Addr    string
 	Ports   map[string]struct{}
 
-	ctx context.Context
-	// cancel  context.CancelFunc
+	ctx     context.Context
 	wg      sync.WaitGroup
 	servers []*http.Server
 
@@ -334,6 +339,7 @@ func (s *BridgeServer) DialProxyTimeout(network string, remoteAddress, proxy *ur
 
 // HandleRawConnection allows the processing of a connection from a client and potentially to a remote host
 // before any handshakes or protocols have begun.
+
 // This allows the oppurtunity to do a direct transfer between hosts without any interception of the data.
 // TLS connections can be proxied here without having to MITM the connection; i.e. they can remain secure
 // Plain HTTP requests can be proxied here and directly copied between clients and remote hosts, increasing efficiency
@@ -524,6 +530,7 @@ func (s *BridgeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		plug         plugins.Plugin
 		origReqURL   url.URL
 		curentReqURL url.URL
+		newReq       *http.Request
 		currentPlug  plugins.Plugin
 	)
 
@@ -535,6 +542,20 @@ func (s *BridgeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	origReqURL = *reqURL
 	curentReqURL = origReqURL
 
+	// This list keeps track of the plugins that have handled this request.
+	// This list is played in reverse when modifying the response
+	pluginsList := []plugins.Plugin{}
+
+	// This set keeps track of hosts that have been handled
+	// This prevents plugins from re-handling hosts, if a plugin puts an old host back into the request
+	// :a use case for this is:
+	// * Plugin A forwards data on to Plugin B. It replaces the request's host with a known host that will be handled by Plugin B
+	//   and embeds the original host in the request; i.e. context or as a query parameter etc.
+	// * Plugin B handles the request but wants to forward the request on to the original host in the request,
+	//   but not send it back to Plugin A. It puts the original host back into the request from its embeded data.
+	// * This server sees that the original host has already been handled and assumes its to be forwarded on upstream
+	hostsList := map[string]struct{}{}
+
 	for {
 		plug = s.findPlugin(&curentReqURL)
 		if plug == nil {
@@ -543,12 +564,18 @@ func (s *BridgeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		currentPlug = plug
-
-		reqURL, err = plug.HandleRequest(reqURL, r)
+		hostsList[reqURL.Hostname()] = struct{}{}
+		reqURL, newReq, err = plug.HandleRequest(reqURL, r)
 		if err != nil {
 			http.Error(w, xerrors.Errorf("%s server %s plugin failed to handle url %s: %w", s.Name, plug.Name(), r.Host, err).Error(), http.StatusInternalServerError)
 			return
 		}
+
+		if newReq != nil {
+			r = newReq
+		}
+
+		pluginsList = append(pluginsList, plug)
 
 		if reqURL != nil {
 			r.Host = reqURL.Host
@@ -556,6 +583,11 @@ func (s *BridgeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		if reqURL == nil || reqURL.Host == curentReqURL.Host {
 			// reqURL is now nil or host hasn't changed we are now ready to process the response
+			break
+		}
+
+		if _, ok := hostsList[reqURL.Hostname()]; ok {
+			// reqURL now has a host that has already been handled. We are not ready to process the response
 			break
 		}
 
@@ -618,11 +650,13 @@ func (s *BridgeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		r.URL = reqURL
+		r = r.WithContext(context.WithValue(r.Context(), pluginListKey, pluginsList))
 		// req.RequestURI = utils.TargetFromURL(reqURL)
 		rp.ServeHTTP(w, r)
 		return
 	}
 
+	r = r.WithContext(context.WithValue(r.Context(), pluginListKey, pluginsList))
 	resp := &http.Response{
 		Request: r,
 	}
@@ -646,7 +680,7 @@ func (s *BridgeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 
 	if resp.Body != http.NoBody {
-		if _, err := utils.CopyBuffer(w, resp.Body, nil); err != nil {
+		if _, err := io.CopyBuffer(w, resp.Body, nil); err != nil {
 			log.Error().Err(err).Msgf("failed to send response body for request %s", reqURL.String())
 		}
 	}
@@ -660,25 +694,36 @@ func (s *BridgeServer) ModifyResponse(resp *http.Response) error {
 
 	r := resp.Request
 
-	var plug plugins.Plugin
-	if r != nil {
-		reqURL, err = utils.URLFromRequest(r)
-		if err != nil {
-			return xerrors.Errorf("%s server failed to parse url %s: %w", s.Name, r.Host, err)
-		}
-
-		plug = s.findPlugin(reqURL)
-	}
-
-	if plug == nil {
+	pluginsList := r.Context().Value(pluginListKey).([]plugins.Plugin)
+	if len(pluginsList) == 0 {
 		// No plugin, so nothing to do
 		return nil
 	}
 
+	// tmpBuf := &bytes.Buffer{}
+	rrc := utils.NewReReadCloser(resp.Body)
+	// resp.Body = utils.TeeCloser(rrc, tmpBuf)
+	resp.Body = rrc
+
+	// respBody, _ := ioutil.ReadAll(resp.Body)
+	// log.Debug().Msgf("body: %v", string(respBody))
+	// resp.Body = io.NopCloser(bytes.NewReader(respBody))
+
 	modResponseWriter := NewResponseModifier(resp)
 
-	if err = plug.HandleResponse(modResponseWriter, r, resp.Body, resp.StatusCode); err != nil {
-		return xerrors.Errorf("failed to handle response for request %s: %w", reqURL.String(), err)
+	for i := len(pluginsList) - 1; i >= 0; i-- {
+		plug := pluginsList[i]
+
+		if err = plug.HandleResponse(modResponseWriter, r, resp.Body, resp.StatusCode); err != nil {
+			return xerrors.Errorf("failed to handle response for request %s: %w", reqURL.String(), err)
+		}
+
+		resp.Body.(utils.ReReadCloser).Reset()
+
+		if modResponseWriter.Written() > 0 {
+			// The response writer has been written to, so other plugins can no longer modify the response
+			break
+		}
 	}
 
 	if resp, err = modResponseWriter.Result(); err != nil {

@@ -72,7 +72,7 @@ func (p *HiddenBridgeHandler) HandleCertsReq(rw http.ResponseWriter, r *http.Req
 	rw.Write(p.cert)
 }
 
-func (p *HiddenBridgeHandler) HandleResponse(w http.ResponseWriter, r *http.Request, body io.ReadCloser, statusCode int) error {
+func (p *HiddenBridgeHandler) HandleResponse(w http.ResponseWriter, r *http.Request, body io.Reader, statusCode int) error {
 
 	p.router.ServeHTTP(w, r)
 

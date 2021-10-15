@@ -61,20 +61,20 @@ func (p *FakeRedirectHostHandler) ProxyURL(hostURL *url.URL) (*url.URL, error) {
 	return nil, nil
 }
 
-func (p *FakeRedirectHostHandler) HandleRequest(rURL *url.URL, r *http.Request) (*url.URL, error) {
+func (p *FakeRedirectHostHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, *http.Request, error) {
 
-	path := r.URL.Path
+	path := req.URL.Path
 	if strings.Contains(path, "/custom") {
-		return nil, nil
+		return nil, nil, nil
 	}
 
-	nextURL := *rURL
-	nextURL.Host = fmt.Sprintf("%s:%s", "fakehost.com", rURL.Port())
+	nextURL := *reqURL
+	nextURL.Host = fmt.Sprintf("%s:%s", "fakehost.com", reqURL.Port())
 
-	return &nextURL, nil
+	return &nextURL, nil, nil
 }
 
-func (p *FakeRedirectHostHandler) HandleResponse(w http.ResponseWriter, r *http.Request, body io.ReadCloser, statusCode int) error {
+func (p *FakeRedirectHostHandler) HandleResponse(w http.ResponseWriter, r *http.Request, body io.Reader, statusCode int) error {
 	respBody := "<HTML><HEAD><TITLE>Custom response</TITLE></HEAD><BODY>This here be a custom response!</BODY></HTML>\r\n"
 
 	if _, err := io.WriteString(w, respBody); err != nil {

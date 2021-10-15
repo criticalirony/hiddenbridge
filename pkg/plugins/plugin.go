@@ -27,8 +27,8 @@ type Plugin interface {
 	RemoteURL(hostURL *url.URL) (*url.URL, error)
 	ProxyURL(hostURL *url.URL) (*url.URL, error)
 	HandleCertificate(site string) (*tls.Certificate, error)
-	HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, error)
-	HandleResponse(w http.ResponseWriter, r *http.Request, body io.ReadCloser, statusCode int) error
+	HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, *http.Request, error)
+	HandleResponse(w http.ResponseWriter, r *http.Request, body io.Reader, statusCode int) error
 }
 
 func init() {
@@ -116,10 +116,10 @@ func (p *BasePlugin) ProxyURL(hostURL *url.URL) (*url.URL, error) {
 	return nil, nil // by default plugins will not require a proxy for their requests
 }
 
-func (p *BasePlugin) HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, error) {
-	return nil, nil // by default plugins will not round trip the request
+func (p *BasePlugin) HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, *http.Request, error) {
+	return nil, nil, nil // by default plugins will not round trip the request
 }
 
-func (p *BasePlugin) HandleResponse(w http.ResponseWriter, r *http.Request, body io.ReadCloser, statusCode int) error {
+func (p *BasePlugin) HandleResponse(w http.ResponseWriter, r *http.Request, body io.Reader, statusCode int) error {
 	return nil // by default plugins will not change the response
 }

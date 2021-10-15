@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"hiddenbridge/pkg/utils"
 	"io"
 	"io/ioutil"
 	"net/http"
@@ -16,8 +15,7 @@ import (
 )
 
 type ResponseModifier struct {
-	Body            *bytes.Buffer
-	origRespBodyBuf *bytes.Buffer
+	Body *bytes.Buffer
 
 	Resp        *http.Response
 	initialized bool
@@ -30,12 +28,6 @@ func NewResponseModifier(resp *http.Response) *ResponseModifier {
 		resp = &http.Response{}
 	}
 
-	origRespBodyBuf := &bytes.Buffer{}
-
-	if resp.Body != nil {
-		resp.Body = utils.TeeCloser(resp.Body, origRespBodyBuf)
-	}
-
 	if len(resp.Proto) == 0 || resp.ProtoMajor == 0 {
 		resp.Proto = "HTTP/1.1"
 		resp.ProtoMajor = 1
@@ -43,11 +35,10 @@ func NewResponseModifier(resp *http.Response) *ResponseModifier {
 	}
 
 	r := &ResponseModifier{
-		Resp:            resp,
-		written:         -1,
-		initialized:     true, // So we know if NewResponseModifer was called or not
-		Body:            &bytes.Buffer{},
-		origRespBodyBuf: origRespBodyBuf,
+		Resp:        resp,
+		written:     -1,
+		initialized: true, // So we know if NewResponseModifer was called or not
+		Body:        &bytes.Buffer{},
 	}
 
 	return r
@@ -150,30 +141,34 @@ func parseContentLength(cl string) int64 {
 	return int64(n)
 }
 
+func (rm *ResponseModifier) Written() int {
+	if !rm.initialized || rm.written < 0 {
+		return 0
+	}
+
+	return rm.written
+}
+
 func (rm *ResponseModifier) Result() (*http.Response, error) {
 	if rm.Resp == nil {
 		return nil, xerrors.Errorf("no response result available")
 	}
 
-	res := rm.Resp
+	resp := rm.Resp
 
-	if res.StatusCode == 0 {
-		res.StatusCode = http.StatusOK
+	if resp.StatusCode == 0 {
+		resp.StatusCode = http.StatusOK
 	}
 
 	rm.Flush()
 
-	res.Status = fmt.Sprintf("%03d %s", res.StatusCode, http.StatusText(res.StatusCode))
+	resp.Status = fmt.Sprintf("%03d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
 
-	if res.Body != nil {
-		// If nothing has been written yet as the response body, write the original response body to the result
+	if resp.Body != nil {
+		// If nothing has been written to the result response body, write the original response body to the result
 		if !rm.initialized || rm.written < 0 {
-			if _, err := utils.CopyBuffer(rm.Body, rm.origRespBodyBuf, nil); err != nil {
-				return nil, xerrors.Errorf("failed to copy original response buffer: %w", err)
-			}
-
-			if _, err := res.Body.Read(nil); err == nil {
-				if _, err := utils.CopyBuffer(rm.Body, res.Body, nil); err != nil {
+			if _, err := resp.Body.Read(nil); err == nil {
+				if _, err := io.CopyBuffer(rm.Body, resp.Body, nil); err != nil {
 					return nil, xerrors.Errorf("failed to copy original response buffer: %w", err)
 				}
 			} else if !errors.Is(err, io.EOF) && err.Error() != "http: read on closed response body" {
@@ -181,20 +176,18 @@ func (rm *ResponseModifier) Result() (*http.Response, error) {
 			}
 		}
 
-		if _, ok := res.Body.(io.Closer); ok {
-			res.Body.Close()
-		}
+		resp.Body.Close()
 	}
 
 	if rm.Body != nil {
-		res.Body = ioutil.NopCloser(bytes.NewReader(rm.Body.Bytes()))
+		resp.Body = ioutil.NopCloser(bytes.NewReader(rm.Body.Bytes()))
 	} else {
-		res.Body = http.NoBody
+		resp.Body = http.NoBody
 	}
 
-	res.ContentLength = parseContentLength(res.Header.Get("Content-Length"))
+	resp.ContentLength = parseContentLength(resp.Header.Get("Content-Length"))
 
-	// Not supporting trailers - headers after body
+	// Not supporting trailers / headers after body
 
-	return res, nil
+	return resp, nil
 }

@@ -79,8 +79,6 @@ acceptLoop:
 		var clientHello *tls.ClientHelloInfo
 
 		if !connLooksLikeHTTP(hdr) {
-			log.Debug().Msgf("peek header: %s", hdr)
-
 			// This is most probably a TLS connection - check for a ClientHello message
 			clientHello, err = ReadClientHello(bufio.NewReader(wrappedReader))
 			if err != nil {

@@ -3,7 +3,6 @@ package utils
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -206,39 +205,39 @@ func PackageAsName() string {
 	return name
 }
 
-// CopyBuffer returns any write errors or non-EOF read errors, and the amount
-// of bytes written.
-// taken from: go/src/net/http/httputil/reverseproxy.go:455
-func CopyBuffer(dst io.Writer, src io.Reader, buf []byte) (int64, error) {
-	if len(buf) == 0 {
-		buf = make([]byte, 32*1024)
-	}
-	var written int64
-	for {
-		nr, rerr := src.Read(buf)
-		if rerr != nil && rerr != io.EOF && rerr != context.Canceled {
-			return -1, xerrors.Errorf("read error during buffer copy: %w", rerr)
-		}
-		if nr > 0 {
-			nw, werr := dst.Write(buf[:nr])
-			if nw > 0 {
-				written += int64(nw)
-			}
-			if werr != nil {
-				return written, werr
-			}
-			if nr != nw {
-				return written, io.ErrShortWrite
-			}
-		}
-		if rerr != nil {
-			if rerr == io.EOF {
-				rerr = nil
-			}
-			return written, rerr
-		}
-	}
-}
+// // CopyBuffer returns any write errors or non-EOF read errors, and the amount
+// // of bytes written.
+// // taken from: go/src/net/http/httputil/reverseproxy.go:455
+// func CopyBuffer(dst io.Writer, src io.Reader, buf []byte) (int64, error) {
+// 	if len(buf) == 0 {
+// 		buf = make([]byte, 32*1024)
+// 	}
+// 	var written int64
+// 	for {
+// 		nr, rerr := src.Read(buf)
+// 		if rerr != nil && rerr != io.EOF && rerr != context.Canceled {
+// 			return -1, xerrors.Errorf("read error during buffer copy: %w", rerr)
+// 		}
+// 		if nr > 0 {
+// 			nw, werr := dst.Write(buf[:nr])
+// 			if nw > 0 {
+// 				written += int64(nw)
+// 			}
+// 			if werr != nil {
+// 				return written, werr
+// 			}
+// 			if nr != nw {
+// 				return written, io.ErrShortWrite
+// 			}
+// 		}
+// 		if rerr != nil {
+// 			if rerr == io.EOF {
+// 				rerr = nil
+// 			}
+// 			return written, rerr
+// 		}
+// 	}
+// }
 
 // Get list of local IP Addresses
 // adapted from: https://stackoverflow.com/questions/23558425/how-do-i-get-the-local-ip-address-in-go

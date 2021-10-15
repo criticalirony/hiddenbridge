@@ -76,12 +76,12 @@ func (p *FakeHostHandler) RemoteURL(hostURL *url.URL) (*url.URL, error) {
 	return realURL, nil
 }
 
-func (p *FakeHostHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, error) {
+func (p *FakeHostHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, *http.Request, error) {
 	directURL, err := p.RemoteURL(reqURL)
-	return directURL, err
+	return directURL, nil, err
 }
 
-func (p *FakeHostHandler) HandleResponse(w http.ResponseWriter, r *http.Request, body io.ReadCloser, statusCode int) error {
+func (p *FakeHostHandler) HandleResponse(w http.ResponseWriter, r *http.Request, body io.Reader, statusCode int) error {
 	// Test to check that we can change the body of a response
 	var bodyBytes []byte
 	var err error
@@ -94,7 +94,7 @@ func (p *FakeHostHandler) HandleResponse(w http.ResponseWriter, r *http.Request,
 	if bodyBytes, err = ioutil.ReadAll(body); err != nil {
 		return xerrors.Errorf("failed to read body of response from request %s: %w", reqURL.String(), err)
 	}
-	body.Close()
+
 	bodyBytes = bytes.Replace(bodyBytes, []byte("Served to you from a server far, far, away."), []byte("Served to you from a dish that's best served cold."), -1)
 	if _, err = w.Write(bodyBytes); err != nil {
 		return xerrors.Errorf("failed to write response body for request %s: %w", reqURL.String(), err)

@@ -122,7 +122,7 @@ The API is:
 * RemoteURL(hostURL *url.URL) (*url.URL, error)
 * ProxyURL(hostURL *url.URL) (*url.URL, error)
 * HandleCertificate(site string) (*tls.Certificate, error)
-* HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, error)
+* HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, *http.Request, error)
 * HandleResponse(reqURL *url.URL, resp *http.Response) error
 
 ### ```Name()```

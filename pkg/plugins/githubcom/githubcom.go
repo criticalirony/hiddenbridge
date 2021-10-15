@@ -59,39 +59,24 @@ func (p *GithubHandler) findRepoNameIdx(path string) (offset, length int) {
 	return -1, 0
 }
 
-func (p *GithubHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, error) {
-	var (
-		upstream string
-	)
+func (p *GithubHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, *http.Request, error) {
+	log.Debug().Msgf("%s handling request: %s", p.Name(), reqURL.String())
 
-	log.Debug().Msgf("orig request: %s", reqURL.String())
-
-	upstream = p.Opts.Get("host.upstream").String()
-	upstreamURL, err := utils.NormalizeURL(upstream)
-	if err != nil {
-		return nil, xerrors.Errorf("failed to normalize url %s: %w", upstream, err)
+	cacheHost := p.Opts.Get("cache.host").String()
+	if len(cacheHost) > 0 {
+		// We have a caching host (plugin) so encode current request as a query param and pass onto the cacher
+		reqQuery := reqURL.Query()
+		reqQuery.Add("upstream", url.QueryEscape(reqURL.String()))
+		reqURL.RawQuery = reqQuery.Encode()
+		reqURL.Host = p.Opts.Get("cache.host").String()
 	}
 
-	reqURL.Scheme = upstreamURL.Scheme
-	reqURL.Host = upstreamURL.Host
-
-	repoNameOff, repoNameLen := p.findRepoNameIdx(reqURL.Path)
-	if repoNameOff >= 0 {
-		repoName := reqURL.Path[repoNameOff : repoNameOff+repoNameLen]
-		if !strings.HasSuffix(repoName, ".git") {
-			repoName = repoName + ".git"
-		}
-
-		reqURL.Path = reqURL.Path[:repoNameOff] + repoName + reqURL.Path[repoNameOff+repoNameLen:]
-	}
-
-	reqURL.Path = upstreamURL.Path + reqURL.Path
-
-	log.Debug().Msgf("new request: %s", reqURL.String())
-	return reqURL, nil
+	return reqURL, nil, nil
 }
 
-func (p *GithubHandler) HandleResponse(w http.ResponseWriter, r *http.Request, body io.ReadCloser, statusCode int) error {
+func (p *GithubHandler) HandleResponse(w http.ResponseWriter, req *http.Request, body io.Reader, statusCode int) error {
+	log.Debug().Msgf("%s handling response: req: %s", p.Name(), req.URL.String())
+
 	if statusCode >= http.StatusMovedPermanently && statusCode < http.StatusBadRequest {
 		location := w.Header().Get("location")
 		if len(location) == 0 {

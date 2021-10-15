@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/rs/zerolog/log"
 	"golang.org/x/xerrors"
 )
 
@@ -65,7 +66,18 @@ func (c *Command) Envs() []string {
 }
 
 func (c *Command) Run(timeout time.Duration, stdout, stderr io.Writer, dir string) (err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	var (
+		ctx    context.Context
+		cancel context.CancelFunc
+	)
+
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(context.Background(), timeout)
+	} else {
+		log.Warn().Msg("command running with no timeout")
+		ctx, cancel = context.WithCancel(context.Background())
+	}
+
 	defer func() {
 		cancel()
 	}()
