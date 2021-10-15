@@ -63,7 +63,7 @@ func testRoute(w http.ResponseWriter, r *http.Request) {
 	isServedLocal := urlQuery.Get("served")
 	isLaunchingTask := urlQuery.Get("task")
 
-	if requestContext, ok = r.Context().Value(gitCacheKey).(*GitRequestContext); !ok {
+	if requestContext, ok = r.Context().Value(reqContextKey).(*GitRequestContext); !ok {
 		log.Panic().Msgf("unable to retrieve git cache context for this request: %s", r.URL.String())
 	}
 
@@ -80,7 +80,11 @@ func testRoute(w http.ResponseWriter, r *http.Request) {
 			log.Panic().Msgf("launch task failure: no path provided")
 		}
 
-		repoContext := getRepoContext(r.Host, testPath)
+		repoContext := getRepoContext(&url.URL{
+			Host: r.Host,
+			Path: testPath,
+		})
+
 		if repoContext == nil {
 			log.Panic().Msgf("launch task failure: repo context not available")
 		}
@@ -177,7 +181,7 @@ func TestGitCacheHandleRequest(t *testing.T) {
 	require.Nil(t, resultURL)
 	require.NotNil(t, resultReq)
 
-	requestContext, ok = resultReq.Context().Value(gitCacheKey).(*GitRequestContext)
+	requestContext, ok = resultReq.Context().Value(reqContextKey).(*GitRequestContext)
 	require.True(t, ok)
 	require.Equal(t, http.StatusNotFound, requestContext.status)
 	require.Nil(t, requestContext.upstream)
@@ -190,7 +194,7 @@ func TestGitCacheHandleRequest(t *testing.T) {
 	require.Equal(t, upstreamPath, resultURL.String())
 	require.NotNil(t, resultReq)
 
-	requestContext, ok = resultReq.Context().Value(gitCacheKey).(*GitRequestContext)
+	requestContext, ok = resultReq.Context().Value(reqContextKey).(*GitRequestContext)
 	require.True(t, ok)
 	require.Equal(t, http.StatusNotFound, requestContext.status)
 	require.Equal(t, upstreamPath, requestContext.upstream.String())
@@ -202,7 +206,7 @@ func TestGitCacheHandleRequest(t *testing.T) {
 	require.Nil(t, resultURL)
 	require.NotNil(t, resultReq)
 
-	requestContext, ok = resultReq.Context().Value(gitCacheKey).(*GitRequestContext)
+	requestContext, ok = resultReq.Context().Value(reqContextKey).(*GitRequestContext)
 	require.True(t, ok)
 	require.Equal(t, http.StatusOK, requestContext.status)
 	require.Nil(t, requestContext.upstream)
@@ -214,7 +218,7 @@ func TestGitCacheHandleRequest(t *testing.T) {
 	require.Nil(t, resultURL)
 	require.NotNil(t, resultReq)
 
-	requestContext, ok = resultReq.Context().Value(gitCacheKey).(*GitRequestContext)
+	requestContext, ok = resultReq.Context().Value(reqContextKey).(*GitRequestContext)
 	require.True(t, ok)
 	require.Equal(t, http.StatusOK, requestContext.status)
 	require.Equal(t, upstreamPath, requestContext.upstream.String())
@@ -226,7 +230,7 @@ func TestGitCacheHandleRequest(t *testing.T) {
 	require.Nil(t, resultURL)
 	require.NotNil(t, resultReq)
 
-	requestContext, ok = resultReq.Context().Value(gitCacheKey).(*GitRequestContext)
+	requestContext, ok = resultReq.Context().Value(reqContextKey).(*GitRequestContext)
 	require.True(t, ok)
 	require.Equal(t, http.StatusNotFound, requestContext.status)
 	require.Nil(t, requestContext.upstream)
@@ -238,7 +242,7 @@ func TestGitCacheHandleRequest(t *testing.T) {
 	require.Equal(t, upstreamPath, resultURL.String())
 	require.NotNil(t, resultReq)
 
-	requestContext, ok = resultReq.Context().Value(gitCacheKey).(*GitRequestContext)
+	requestContext, ok = resultReq.Context().Value(reqContextKey).(*GitRequestContext)
 	require.True(t, ok)
 	require.Equal(t, http.StatusNotFound, requestContext.status)
 	require.Equal(t, upstreamPath, requestContext.upstream.String())
@@ -258,7 +262,10 @@ func TestGitCacheLaunchTask(t *testing.T) {
 	testPath := "project/repo"
 
 	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/%s/test?served=false&task=true", host, testPath), nil)
-	repoContext := getRepoContext(req.Host, testPath)
+	repoContext := getRepoContext(&url.URL{
+		Host: req.Host,
+		Path: testPath,
+	})
 	require.NotNil(t, repoContext)
 
 	repoPath := filepath.Join(cachePath, repoContext.hash)
@@ -269,7 +276,7 @@ func TestGitCacheLaunchTask(t *testing.T) {
 	require.Nil(t, resultURL)
 	require.NotNil(t, resultReq)
 
-	requestContext, ok = resultReq.Context().Value(gitCacheKey).(*GitRequestContext)
+	requestContext, ok = resultReq.Context().Value(reqContextKey).(*GitRequestContext)
 	require.True(t, ok)
 	require.Equal(t, http.StatusNotFound, requestContext.status)
 	require.Nil(t, requestContext.upstream)
@@ -297,7 +304,10 @@ func TestGitCacheReLaunchBusyTask(t *testing.T) {
 	testPath := "project/repo"
 
 	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/%s/test?served=false&task=true", host, testPath), nil)
-	repoContext := getRepoContext(req.Host, testPath)
+	repoContext := getRepoContext(&url.URL{
+		Host: req.Host,
+		Path: testPath,
+	})
 	require.NotNil(t, repoContext)
 
 	repoPath := filepath.Join(cachePath, repoContext.hash)
@@ -311,7 +321,7 @@ func TestGitCacheReLaunchBusyTask(t *testing.T) {
 	require.Nil(t, resultURL)
 	require.NotNil(t, resultReq)
 
-	requestContext, ok = resultReq.Context().Value(gitCacheKey).(*GitRequestContext)
+	requestContext, ok = resultReq.Context().Value(reqContextKey).(*GitRequestContext)
 	require.True(t, ok)
 	require.Equal(t, http.StatusNotFound, requestContext.status)
 	require.Nil(t, requestContext.upstream)

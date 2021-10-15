@@ -19,8 +19,8 @@ import (
 type GitCacheHandler struct {
 	plugins.BasePlugin
 	cachePath string
-
-	r *mux.Router
+	gitProxy  string
+	r         *mux.Router
 }
 
 func init() {
@@ -57,6 +57,8 @@ func (p *GitCacheHandler) Init(opts *options.OptionValue) error {
 		p.r.HandleFunc(fmt.Sprintf(`/{path:.*?}%s`, item.Path), item.Handler).Methods(item.Method)
 	}
 
+	p.gitProxy = p.Opts.GetDefault("git.proxy", "").String()
+
 	return nil
 }
 
@@ -75,11 +77,12 @@ func (p *GitCacheHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*ur
 	var hasRoute bool = p.r.Match(req, &match)
 
 	// We have a route, also might have an upstream
-	gitCacheContext := &GitRequestContext{
+	gitRequestContext := &GitRequestContext{
 		repoRoot: p.cachePath,
+		gitProxy: p.gitProxy,
 	}
 
-	req = req.WithContext(context.WithValue(req.Context(), gitCacheKey, gitCacheContext))
+	req = req.WithContext(context.WithValue(req.Context(), reqContextKey, gitRequestContext))
 
 	if urlQuery.Has("upstream") {
 		if upstreamHost, err = url.QueryUnescape(urlQuery.Get("upstream")); err != nil {
@@ -90,29 +93,31 @@ func (p *GitCacheHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*ur
 			return nil, nil, xerrors.Errorf("failled to parse url of upstream host: %s: %w", urlQuery.Get("upstream"), err)
 		}
 
-		gitCacheContext.upstream = upstreamURL
+		// Shallow copy, not pointer assignment
+		gitRequestContext.upstream = &url.URL{}
+		*gitRequestContext.upstream = *upstreamURL
 
 		if !hasRoute {
 			// We don't support the path locally, so hopefully the upstream server does
 			// we might cache the path in the response
-			gitCacheContext.status = http.StatusNotFound
+			gitRequestContext.status = http.StatusNotFound
 			return upstreamURL, req, nil
 		}
 	}
 
 	if !hasRoute {
 		// Don't have a route and don't have an upstream, so just generate a 404 in the response
-		gitCacheContext.status = http.StatusNotFound
+		gitRequestContext.status = http.StatusNotFound
 		return nil, req, nil
 	}
 
 	req = mux.SetURLVars(req, match.Vars)
 	match.Handler.ServeHTTP(nil, req) // Handle the request, but you can't send anything as a response, ResponseHandler will do that
-	status := gitCacheContext.status
+	status := gitRequestContext.status
 
-	if gitCacheContext.err != nil {
-		gitCacheContext.status = http.StatusInternalServerError
-		return nil, req, xerrors.Errorf("serve request route failure: %w", gitCacheContext.err)
+	if gitRequestContext.err != nil {
+		gitRequestContext.status = http.StatusInternalServerError
+		return nil, req, xerrors.Errorf("serve request route failure: %w", gitRequestContext.err)
 	}
 
 	if status == 0 {
@@ -120,18 +125,14 @@ func (p *GitCacheHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*ur
 	}
 
 	if status != http.StatusOK {
-		// This request could not be served localy
+		// This request could not be fulfilled localy
 		if upstreamURL != nil {
-			// Get the upstream to serve the URL and possibly cache the response
+			// Get the upstream to serve the URL and possibly this plugin will cache the response
 			return upstreamURL, req, nil
 		}
-
-		// We couldn't serve the request locally and there's no upstream, so the response handler will return a 404
-		return nil, req, nil // by default plugins will not round trip the request
-
 	}
 
-	// This request can be served locally regardless of upstream
+	// This plugin will now handle the response locally, which might be a 404
 	return nil, req, nil
 }
 
@@ -142,6 +143,20 @@ func (p *GitCacheHandler) HandleResponse(w http.ResponseWriter, req *http.Reques
 		req.Method = http.MethodGet
 	}
 
-	// p.r.ServeHTTP(w, r)
+	var (
+		ok             bool
+		requestContext *GitRequestContext
+	)
+
+	if requestContext, ok = req.Context().Value(reqContextKey).(*GitRequestContext); !ok {
+		log.Error().Msgf("unable to retrieve git cache context for this request: %s", req.URL.String())
+		if w != nil {
+			http.Error(w, fmt.Sprintf("unable to retrieve git cache context for this request: %s", req.URL.String()), http.StatusInternalServerError)
+		}
+	}
+
+	_ = requestContext
+
+	p.r.ServeHTTP(w, req)
 	return nil
 }

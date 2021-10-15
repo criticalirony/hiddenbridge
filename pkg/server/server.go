@@ -55,7 +55,8 @@ type BridgeServer struct {
 	caCert    tls.Certificate
 	siteCerts map[string]*tls.Certificate
 
-	siteProxies map[string]*httputil.ReverseProxy
+	// Caches per site reverse proxy servers
+	reverseSiteProxies map[string]*httputil.ReverseProxy
 
 	// Keeps track of IPs that point back to this server
 	// used to prevent recursive requests
@@ -69,12 +70,12 @@ func init() {
 
 func NewBridgeServer() *BridgeServer {
 	return &BridgeServer{
-		Name:        "hiddenbridge",
-		Started:     make(chan struct{}),
-		wg:          sync.WaitGroup{},
-		servers:     []*http.Server{},
-		siteCerts:   map[string]*tls.Certificate{},
-		siteProxies: map[string]*httputil.ReverseProxy{},
+		Name:               "hiddenbridge",
+		Started:            make(chan struct{}),
+		wg:                 sync.WaitGroup{},
+		servers:            []*http.Server{},
+		siteCerts:          map[string]*tls.Certificate{},
+		reverseSiteProxies: map[string]*httputil.ReverseProxy{},
 	}
 }
 
@@ -531,7 +532,6 @@ func (s *BridgeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		origReqURL   url.URL
 		curentReqURL url.URL
 		newReq       *http.Request
-		currentPlug  plugins.Plugin
 	)
 
 	reqURL, err := utils.URLFromRequest(r)
@@ -563,7 +563,6 @@ func (s *BridgeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 
-		currentPlug = plug
 		hostsList[reqURL.Hostname()] = struct{}{}
 		reqURL, newReq, err = plug.HandleRequest(reqURL, r)
 		if err != nil {
@@ -594,13 +593,20 @@ func (s *BridgeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		curentReqURL = *reqURL
 	}
 
-	if currentPlug == nil {
+	if plug == nil {
 		http.Error(w, fmt.Sprintf("%s server does not support url %s", s.Name, curentReqURL.String()), http.StatusNotFound)
 		return
 	}
 
 	if reqURL != nil {
-		proxyURL, err := currentPlug.ProxyURL(reqURL)
+		plug = s.findPlugin(&curentReqURL)
+		if plug == nil {
+			// No plugin, we can assume we now have the final end point
+			http.Error(w, xerrors.Errorf("%s server %s plugin failed to check proxy url %s: %w", s.Name, plug.Name(), reqURL.String(), err).Error(), http.StatusInternalServerError)
+			return
+		}
+
+		proxyURL, err := plug.ProxyURL(reqURL)
 		if err != nil {
 			http.Error(w, xerrors.Errorf("%s server %s plugin failed to check proxy url %s: %w", s.Name, plug.Name(), reqURL.String(), err).Error(), http.StatusInternalServerError)
 			return
@@ -631,34 +637,35 @@ func (s *BridgeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			tlsConfig.InsecureSkipVerify = true
 		}
 
-		rp, ok := s.siteProxies[reqURL.Host]
+		rsp, ok := s.reverseSiteProxies[reqURL.Host]
 		if !ok {
 			revProxy := &url.URL{
 				Scheme: reqURL.Scheme,
 				Host:   reqURL.Host,
 			}
-			reqURL.Scheme = ""
-			reqURL.Host = ""
 
-			rp = httputil.NewSingleHostReverseProxy(revProxy)
-			rp.Transport = &http.Transport{
+			rsp = httputil.NewSingleHostReverseProxy(revProxy)
+			rsp.Transport = &http.Transport{
 				Proxy:           http.ProxyURL(proxyURL),
 				TLSClientConfig: tlsConfig,
 			}
-			rp.ModifyResponse = s.ModifyResponse
-			s.siteProxies[reqURL.Host] = rp
+			rsp.ModifyResponse = s.ModifyResponse
+			s.reverseSiteProxies[reqURL.Host] = rsp
 		}
 
-		r.URL = reqURL
+		*r.URL = *reqURL  // Shallow copy
+		r.URL.Scheme = "" // Remove host and scheme, it breaks the way reverse proxy works
+		r.URL.Host = ""
 		r = r.WithContext(context.WithValue(r.Context(), pluginListKey, pluginsList))
 		// req.RequestURI = utils.TargetFromURL(reqURL)
-		rp.ServeHTTP(w, r)
+		rsp.ServeHTTP(w, r)
 		return
 	}
 
 	r = r.WithContext(context.WithValue(r.Context(), pluginListKey, pluginsList))
 	resp := &http.Response{
 		Request: r,
+		Body:    http.NoBody,
 	}
 
 	if err = s.ModifyResponse(resp); err != nil {

@@ -3,6 +3,7 @@
 package command
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"os"
@@ -87,13 +88,25 @@ func (c *Command) Run(timeout time.Duration, stdout, stderr io.Writer, dir strin
 	cmd.Dir = dir
 	cmd.Stderr = stderr
 	cmd.Stdout = stdout
+	log.Debug().Msgf("running command: %s", cmd.String())
+
+	if stderr == nil {
+		cmd.Stderr = &bytes.Buffer{}
+	}
+
 	if err = cmd.Start(); err != nil {
 		return xerrors.Errorf("%+v failed to start: %w", c, err)
 	}
 
 	result := make(chan error)
 	go func() {
-		result <- cmd.Wait()
+
+		err := cmd.Wait()
+		if err != nil && stderr == nil {
+			err = xerrors.Errorf("stderr: %s: %w", cmd.Stderr.(*bytes.Buffer).String(), err)
+		}
+
+		result <- err
 	}()
 
 	select {
@@ -117,7 +130,7 @@ func (c *Command) Run(timeout time.Duration, stdout, stderr io.Writer, dir strin
 
 	case err = <-result:
 		if err != nil {
-			err = xerrors.Errorf("%+v run failure: %w", c, err)
+			err = xerrors.Errorf("%+v process exit error: %w", cmd.String(), err)
 		}
 	}
 

@@ -2,6 +2,7 @@ package utils
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -12,13 +13,43 @@ var (
 	ErrNoFunction = errors.New("no function")
 )
 
+type ErrExpiry struct {
+	expires time.Time
+}
+
+func NewErrExpiryOn(expire time.Time) ErrExpiry {
+	return ErrExpiry{expires: expire}
+}
+
+func NewErrExpiryAfter(dur time.Duration) ErrExpiry {
+	return ErrExpiry{expires: time.Now().UTC().Add(dur)}
+}
+
+func (e ErrExpiry) Error() string {
+	now := time.Now().UTC()
+	if now.After(e.expires) {
+		return fmt.Sprintf("expired: %s", e.expires.String())
+	}
+
+	return fmt.Sprintf("not expired: expires %s: %s", e.expires.String(), e.expires.Sub(now).String())
+}
+
+func (e ErrExpiry) Expires() time.Time {
+	return e.expires
+}
+
+func (e ErrExpiry) Expired() bool {
+	return time.Now().UTC().After(e.expires)
+}
+
 type Task struct {
-	lock   Lock
-	Desc   string
-	fn     func(ctx interface{}) error
-	Ctx    interface{}
-	isBusy bool
-	Err    error
+	lock    Lock
+	Desc    string
+	Ctx     interface{}
+	Err     error
+	fn      func(ctx interface{}) error
+	isBusy  bool
+	lastRun time.Time
 }
 
 func NewTask(desc string, fn func(ctx interface{}) error) *Task {
@@ -33,7 +64,7 @@ func NewTask(desc string, fn func(ctx interface{}) error) *Task {
 
 func (t *Task) Run(ctx interface{}) error {
 	if t.fn == nil {
-		return xerrors.Errorf("failed to run task: %w", ErrLockBusy)
+		return xerrors.Errorf("failed to run task: %w", ErrNoFunction)
 	}
 
 	if err := t.lock.TryLock(); err != nil {
@@ -46,16 +77,37 @@ func (t *Task) Run(ctx interface{}) error {
 	go func() {
 		t.isBusy = true
 		close(started)
+		t.lastRun = time.Now().UTC()
+		log.Debug().Msgf("task: %v started: %s", t.fn, t.lastRun)
 		t.Err = t.fn(ctx)
 		t.isBusy = false
+		startRun := t.lastRun
+		t.lastRun = time.Now().UTC()
+		log.Debug().Msgf("task: %v completed: %s (%s)", t.fn, t.lastRun, t.lastRun.Sub(startRun))
+
 		if err := t.lock.UnLock(); err != nil {
 			log.Err(err).Msg("task unlock failure")
+		}
+
+		if t.Err != nil {
+			// Uncomment below for stack trace of error
+			// log.Error().Msgf("task run failure: %+v", t.Err)
+			log.Error().Msgf("task run failure: %v", t.Err)
 		}
 	}()
 
 	<-started
 
 	return nil
+}
+
+func (t *Task) RunIfOlder(ctx interface{}, dur time.Duration) error {
+	taskAgeOff := t.lastRun.Add(dur)
+	if time.Now().UTC().Before(taskAgeOff) {
+		return xerrors.Errorf("task run failure: %w", NewErrExpiryOn(taskAgeOff))
+	}
+
+	return t.Run(ctx)
 }
 
 func (t *Task) IsBusy() bool {
