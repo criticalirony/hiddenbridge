@@ -84,7 +84,7 @@ func (p *GitCacheHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*ur
 
 	req = req.WithContext(context.WithValue(req.Context(), reqContextKey, gitRequestContext))
 
-	if urlQuery.Has("upstream") {
+	if _, ok := urlQuery["upstream"]; ok {
 		if upstreamHost, err = url.QueryUnescape(urlQuery.Get("upstream")); err != nil {
 			return nil, nil, xerrors.Errorf("failled to unescape upstream host: %s: %w", urlQuery.Get("upstream"), err)
 		}

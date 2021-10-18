@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 
 set -e
 
@@ -16,17 +16,24 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+function version_lt() { 
+  test "$(echo "$@" | tr " " "\n" | sort -V | head -n 1)" == "$1"; 
+} 
+
+
 mkdir -p ${BUILD_DIR}
 
 # Pretty good effort at finding versions of go
 declare -a GO_VERSIONS=($(which go) ${HOME}/sdk/go1**/bin/go)
 GO_VERSIONS=($(echo "${GO_VERSIONS[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
 
-semver_regex="^[^0-9]*([0-9]+\.[0-9]+[^/]+).*$"
+semver_regex="^.*/sdk/[^0-9]*([0-9]+\.[0-9]+[^/]+).*$"
 for GO_VERSION in "${GO_VERSIONS[@]}"
 do
     if [[ ${GO_VERSION} =~ $semver_regex ]]; then
-        echo "Buliding: with go${BASH_REMATCH[1]}"
+        if version_lt ${BASH_REMATCH[1]} "1.15"; then
+          continue
+        fi
         ${GO_VERSION} build -o ./build_versions/hiddenbridge_${BASH_REMATCH[1]} ./cmd/hiddenbridge
         ${GO_VERSION} build -o ./build_versions/signcert_${BASH_REMATCH[1]} ./cmd/signcert
     fi

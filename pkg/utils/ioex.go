@@ -3,6 +3,7 @@ package utils
 import (
 	"bytes"
 	"io"
+	"io/ioutil"
 
 	"github.com/rs/zerolog/log"
 )
@@ -19,7 +20,7 @@ func TeeCloser(r io.Reader, w io.Writer) io.ReadCloser {
 	if rc, ok := r.(io.Closer); ok {
 		tc.c = rc
 	} else {
-		tc.c = io.NopCloser(r)
+		tc.c = ioutil.NopCloser(r)
 	}
 
 	return tc
@@ -96,7 +97,7 @@ func NewReReadCloser(reader io.ReadCloser) ReReadCloser {
 	if c, ok := reader.(io.Closer); ok {
 		rrc.closer = c
 	} else {
-		rrc.closer = io.NopCloser(reader)
+		rrc.closer = ioutil.NopCloser(reader)
 	}
 
 	return rrc

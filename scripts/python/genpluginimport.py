@@ -68,5 +68,5 @@ def main(argv=None):
     process(**vars(args))
 
 
-if __Name__ == '__main__':
+if __name__ == '__main__':
     main()
