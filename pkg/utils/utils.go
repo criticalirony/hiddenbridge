@@ -60,6 +60,10 @@ func SplitHostPath(rawURL string) (host, path string) {
 	return rawURL[:idx], rawURL[idx:]
 }
 
+func URLIsEmpty(u *url.URL) bool {
+	return u == nil || (len(u.Scheme) == 0 && len(u.Host) == 0 && len(u.Path) == 0)
+}
+
 func NormalizeURL(rawURL string) (*url.URL, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -81,7 +85,10 @@ func NormalizeURL(rawURL string) (*url.URL, error) {
 		}
 	}
 
-	if len(u.Scheme) == 0 && len(u.Host) == 0 && len(u.Path) > 0 {
+	if URLIsEmpty(u) {
+		// An empty url is not necessarily an error
+		return nil, nil
+	} else if len(u.Scheme) == 0 && len(u.Host) == 0 && len(u.Path) > 0 {
 		// Assume no scheme and no port
 		// u.path == bob.com
 		host, path := SplitHostPath(rawURL)

@@ -2,67 +2,60 @@ package command
 
 import (
 	"context"
+	"errors"
 	"os"
-	"strings"
+	"os/exec"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"golang.org/x/xerrors"
 )
 
 func TestCommandSimple(t *testing.T) {
-	cmd := NewCommand("/bin/bash", "-c", "ls /tmp")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 
-	stdout := &strings.Builder{}
-	stderr := &strings.Builder{}
-
-	err := cmd.Run(2*time.Second, stdout, stderr, "")
+	out, err := Run(ctx, "", nil, "/bin/bash", "-c", "ls /tmp")
 	require.Nil(t, err)
-	require.Greater(t, len(stdout.String()), 0)
-	require.Equal(t, len(stderr.String()), 0)
+	require.Greater(t, len(out), 0)
 }
 
 func TestCommandEnviron(t *testing.T) {
-	cmd := NewCommand("/bin/bash", "-c", "echo -n $TEST_VAR")
-	cmd.AddEnv("TEST_VAR=hello world")
-	stdout := &strings.Builder{}
-	stderr := &strings.Builder{}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 
-	err := cmd.Run(2*time.Second, stdout, stderr, "")
+	out, err := Run(ctx, "", NewEnvs("TEST_VAR=hello world"), "/bin/bash", "-c", "echo -n $TEST_VAR")
 	require.Nil(t, err)
-	require.Equal(t, len(stderr.String()), 0)
-	require.Equal(t, "hello world", stdout.String())
-
+	require.Equal(t, "hello world", string(out))
 }
 
 func TestCommandWorkingDir(t *testing.T) {
-	cmd := NewCommand("/bin/bash", "-c", "echo -n $PWD")
-	stdout := &strings.Builder{}
-	stderr := &strings.Builder{}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 
 	pwd, err := os.Getwd()
 	require.Nil(t, err)
 
-	err = cmd.Run(2*time.Second, stdout, stderr, "")
+	out, err := Run(ctx, "", nil, "/bin/bash", "-c", "echo -n $PWD")
 	require.Nil(t, err)
-	require.Equal(t, len(stderr.String()), 0)
-	require.Equal(t, pwd, stdout.String())
+	require.Equal(t, pwd, string(out))
 
-	cmd = NewCommand("/bin/bash", "-c", "echo -n $PWD")
-	stdout = &strings.Builder{}
-	stderr = &strings.Builder{}
-
-	err = cmd.Run(2*time.Second, stdout, stderr, "/tmp")
+	out, err = Run(ctx, "/tmp", nil, "/bin/bash", "-c", "echo -n $PWD")
 	require.Nil(t, err)
-	require.Equal(t, "/tmp", stdout.String())
+	require.Equal(t, "/tmp", string(out))
 }
 
 func TestCommandTimeout(t *testing.T) {
-	cmd := NewCommand("/bin/bash", "-c", "sleep 5")
-	stdout := &strings.Builder{}
-	stderr := &strings.Builder{}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
 
-	err := cmd.Run(500*time.Millisecond, stdout, stderr, "")
-	require.Equal(t, context.DeadlineExceeded, xerrors.Unwrap(err))
+	_, err := Run(ctx, "", nil, "/bin/bash", "-c", "sleep 5")
+	require.NotNil(t, err)
+	require.Equal(t, "/bin/bash -c sleep 5 in : signal: killed", err.Error())
+
+	err = errors.Unwrap(err)
+	require.NotNil(t, err)
+
+	exitErr := &exec.ExitError{}
+	require.True(t, errors.Is(err, context.DeadlineExceeded) || errors.As(err, &exitErr))
 }

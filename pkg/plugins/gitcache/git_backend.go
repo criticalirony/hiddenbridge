@@ -8,6 +8,7 @@ import (
 	"hiddenbridge/pkg/utils"
 	"hiddenbridge/pkg/utils/git"
 	"io"
+	"io/ioutil"
 	"net/http"
 	"net/url"
 	"os"
@@ -30,11 +31,12 @@ type GitService struct {
 }
 
 type GitRequestContext struct {
-	repoRoot string
-	gitProxy string
-	upstream *url.URL
-	status   int
-	err      error
+	repoRoot   string
+	gitProxy   string
+	upstream   *url.URL
+	body       io.Reader
+	statusCode int
+	err        error
 }
 
 type GitRepoContext struct {
@@ -148,79 +150,35 @@ func getHead(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func getInfoRefsReq(req *http.Request, reqCtx *GitRequestContext, repoCtx *GitRepoContext, repoPath string) {
-	var (
-		err error
-	)
-	// gitcache.org:80/golang/dl.git/info/refs?service=git-upload-pack (client fetch/clone)
-	// gitcache.org:80/golang/dl.git/info/refs?service=git-receive-pack (client push)
+func getInfoRefsReq(req *http.Request, reqCtx *GitRequestContext, repoCtx *GitRepoContext, repoPath string) error {
+	// // gitcache.org:80/golang/dl.git/info/refs?service=git-upload-pack (client fetch/clone)
+	// // gitcache.org:80/golang/dl.git/info/refs?service=git-receive-pack (client push)
 
 	gitDir := filepath.Join(reqCtx.repoRoot, repoCtx.hash)
 
-	reqCtx.status = http.StatusNotFound // by default 404 for local files; we can assume info/refs should be served by upstream
-	reqCtx.err = nil
+	hasRepo, err := repoExists(gitDir, reqCtx, repoCtx)
+	if err != nil {
+		return err
+	}
 
-	hasRepo := true
-	service := req.URL.Query().Get("service")
-	if service == "git-upload-pack" || service == "git-receive-pack" || service == "" {
-		// no service (service == "") is legacy mode and at some point should probably be deprecated
-
-		hasRepo, err = repoExists(gitDir, reqCtx, repoCtx)
-		if err != nil {
-			reqCtx.status = http.StatusInternalServerError
-			reqCtx.err = xerrors.Errorf("repo vaildation failure: %w", err)
+	if !hasRepo {
+		if err := os.MkdirAll(gitDir, os.ModePerm); err != nil {
+			return xerrors.Errorf("failed to create repo dir: %w", err)
 		}
 
-		if !hasRepo {
-			if err := os.MkdirAll(gitDir, os.ModePerm); err != nil {
-				reqCtx.status = http.StatusInternalServerError
-				reqCtx.err = xerrors.Errorf("failed to create repo dir: %w", err)
-			}
+		// Clone
+		if !utils.URLIsEmpty(reqCtx.upstream) {
+			// Repo doesn't exist locally yet.. attempt clone from upstream
+			cloneURL := *reqCtx.upstream
+			cloneURL.Path = repoPath
+			cloneURL.RawQuery = ""
 
-			if reqCtx.upstream != nil {
-				cloneURL := *reqCtx.upstream
-				cloneURL.Path = repoPath
-				cloneURL.RawQuery = ""
-
-				// Repo doesn't exist locally yet.. attempt clone from upstream
-				repoCtx.task.SetFunction(func(ctx interface{}) error {
-					if err := git.Clone(cloneURL.String(), gitDir, true, true, reqCtx.gitProxy, 3600*time.Second); err != nil {
-						return xerrors.Errorf("task: run failure: %w", err)
-					}
-
-					if err := git.Run([]string{"update-server-info"}, "", gitDir, 60*time.Second, nil, nil); err != nil {
-						return xerrors.Errorf("task: git update-server-info failure: %w", err)
-					}
-
-					return nil
-				})
-
-				if err := repoCtx.task.RunIfOlder(nil, 5*time.Minute); err != nil {
-					var errExpiry utils.ErrExpiry
-
-					if errors.As(err, &errExpiry) {
-						log.Warn().Err(errExpiry).Msg("task run failure: task has not expired")
-					} else if !errors.Is(err, utils.ErrLockBusy) {
-						reqCtx.status = http.StatusInternalServerError
-						reqCtx.err = xerrors.Errorf("failed to clone repo: %s: %w", cloneURL.String(), err)
-					}
-				}
-			} else {
-				// Repo doesn't exist locally yet.. initialize an empty, local repo
-				// this is quick so we'll do it synchronously
-				if err := git.Init(gitDir, true, 10*time.Second); err != nil {
-					reqCtx.status = http.StatusInternalServerError
-					reqCtx.err = xerrors.Errorf("failed to init repo: %s: %w", gitDir, err)
-				}
-			}
-		} else if reqCtx.upstream != nil {
-			// we have an existing repo dir and an upstream.. so just task an update
 			repoCtx.task.SetFunction(func(ctx interface{}) error {
-				if err := git.Remote("update", true, gitDir, reqCtx.gitProxy, 3600*time.Second, nil); err != nil {
-					return xerrors.Errorf("task: git remote update failure: %w", err)
+				if err := git.Clone(cloneURL.String(), gitDir, true, true, reqCtx.gitProxy, 3600*time.Second); err != nil {
+					return xerrors.Errorf("task: run failure: %w", err)
 				}
 
-				if err := git.Run([]string{"update-server-info"}, "", gitDir, 60*time.Second, nil, nil); err != nil {
+				if _, err := git.Run("", gitDir, 60*time.Second, "update-server-info"); err != nil {
 					return xerrors.Errorf("task: git update-server-info failure: %w", err)
 				}
 
@@ -233,18 +191,75 @@ func getInfoRefsReq(req *http.Request, reqCtx *GitRequestContext, repoCtx *GitRe
 				if errors.As(err, &errExpiry) {
 					log.Warn().Err(errExpiry).Msg("task run failure: task has not expired")
 				} else if !errors.Is(err, utils.ErrLockBusy) {
-					reqCtx.status = http.StatusInternalServerError
-					reqCtx.err = xerrors.Errorf("failed to update repo: %s: %w", gitDir, err)
+					return xerrors.Errorf("failed to clone repo: %s: %w", cloneURL.String(), err)
 				}
 			}
 		} else {
-			// No upstream, but a valid local repo.. lets see if we can serve something
+			if err := git.Init(gitDir, true, 10*time.Second); err != nil {
+				return xerrors.Errorf("failed to init repo: %s: %w", gitDir, err)
+			}
+
+			if _, err := git.Run("", gitDir, 60*time.Second, "update-server-info"); err != nil {
+				return xerrors.Errorf("task: git update-server-info failure: %w", err)
+			}
+		}
+	} else if hasRepo && !utils.URLIsEmpty(reqCtx.upstream) {
+		// we have an existing repo dir and an upstream.. so just task an update
+		repoCtx.task.SetFunction(func(ctx interface{}) error {
+			if _, err := git.Remote("update", true, gitDir, reqCtx.gitProxy, 3600*time.Second); err != nil {
+				return xerrors.Errorf("task: git remote update failure: %w", err)
+			}
+
+			if _, err := git.Run("", gitDir, 60*time.Second, "update-server-info"); err != nil {
+				return xerrors.Errorf("task: git update-server-info failure: %w", err)
+			}
+
+			return nil
+		})
+
+		if err := repoCtx.task.RunIfOlder(nil, 5*time.Minute); err != nil {
+			var errExpiry utils.ErrExpiry
+
+			if errors.As(err, &errExpiry) {
+				log.Warn().Err(errExpiry).Msg("task run failure: task has not expired")
+			} else if !errors.Is(err, utils.ErrLockBusy) {
+				return xerrors.Errorf("failed to update repo: %s: %w", gitDir, err)
+			}
 		}
 	}
+
+	return nil
 }
 
-func getInfoRefsResp(w http.ResponseWriter, req *http.Request, reqCtx *GitRequestContext, repoCtx *GitRepoContext, repoPath string) {
+func getInfoRefsResp(w http.ResponseWriter, req *http.Request, reqCtx *GitRequestContext, repoCtx *GitRepoContext, repoPath string) error {
 
+	// Refs are returned by upstream if available
+	if !utils.URLIsEmpty(reqCtx.upstream) {
+		return nil
+	}
+
+	if !strings.HasPrefix(repoPath, "/") {
+		repoPath = "/" + repoPath
+	}
+
+	refsFile := filepath.Join(reqCtx.repoRoot, repoCtx.hash, strings.TrimPrefix(req.URL.Path, repoPath))
+
+	if _, err := os.Stat(refsFile); os.IsNotExist(err) {
+		log.Warn().Err(err).Msgf("local cache refs file: %s not found", refsFile)
+		http.NotFound(w, req)
+		return nil
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+
+	refsData, err := ioutil.ReadFile(refsFile)
+	if err != nil {
+		return xerrors.Errorf("local cache refs file: %s read failure: %w", refsFile, err)
+	}
+
+	w.Write(refsData)
+
+	return nil
 }
 
 func getInfoRefs(w http.ResponseWriter, req *http.Request) {
@@ -261,12 +276,11 @@ func getInfoRefs(w http.ResponseWriter, req *http.Request) {
 
 	repoPath, ok := mux.Vars(req)["path"]
 	if !ok {
-		reqCtx.status = http.StatusNotFound // Rely on upstream for this request
-		reqCtx.err = xerrors.Errorf("info/refs request failure: repo path is not available")
+		reqCtx.err = xerrors.Errorf("info/refs request failure: repo path is not available: %w", utils.ErrHTTPNotFound)
 		return
 	}
 
-	if reqCtx.upstream != nil {
+	if !utils.URLIsEmpty(reqCtx.upstream) {
 		repoCtx = getRepoContext(&url.URL{
 			Host: reqCtx.upstream.Host,
 			Path: repoPath,
@@ -280,9 +294,10 @@ func getInfoRefs(w http.ResponseWriter, req *http.Request) {
 
 	if w == nil {
 		// This is a request handler
-		getInfoRefsReq(req, reqCtx, repoCtx, repoPath)
+		reqCtx.err = getInfoRefsReq(req, reqCtx, repoCtx, repoPath)
 	} else {
-		getInfoRefsResp(w, req, reqCtx, repoCtx, repoPath)
+		// This is the response handler
+		reqCtx.err = getInfoRefsResp(w, req, reqCtx, repoCtx, repoPath)
 	}
 }
 
@@ -300,10 +315,7 @@ func getTextFile(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	requestContext.status = http.StatusNotFound
-	if w != nil {
-		return
-	}
+	_ = requestContext
 }
 
 func getInfoPacks(w http.ResponseWriter, req *http.Request) {
@@ -320,10 +332,7 @@ func getInfoPacks(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	requestContext.status = http.StatusNotFound
-	if w != nil {
-		return
-	}
+	_ = requestContext
 }
 
 func getLooseObject(w http.ResponseWriter, req *http.Request) {
@@ -340,10 +349,7 @@ func getLooseObject(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	requestContext.status = http.StatusNotFound
-	if w != nil {
-		return
-	}
+	_ = requestContext
 }
 
 func getPackFile(w http.ResponseWriter, req *http.Request) {
@@ -360,10 +366,7 @@ func getPackFile(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	requestContext.status = http.StatusNotFound
-	if w != nil {
-		return
-	}
+	_ = requestContext
 }
 
 func getIdxFile(w http.ResponseWriter, req *http.Request) {
@@ -380,10 +383,7 @@ func getIdxFile(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	requestContext.status = http.StatusNotFound
-	if w != nil {
-		return
-	}
+	_ = requestContext
 }
 
 func serviceRPC(w http.ResponseWriter, req *http.Request) {
@@ -400,8 +400,5 @@ func serviceRPC(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	requestContext.status = http.StatusNotFound
-	if w != nil {
-		return
-	}
+	_ = requestContext
 }

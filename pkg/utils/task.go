@@ -43,20 +43,28 @@ func (e ErrExpiry) Expired() bool {
 }
 
 type Task struct {
-	lock    Lock
-	Desc    string
-	Ctx     interface{}
-	Err     error
-	fn      func(ctx interface{}) error
-	isBusy  bool
-	lastRun time.Time
+	lock     Lock
+	Desc     string
+	Ctx      interface{}
+	Err      error
+	fn       func(ctx interface{}) error
+	fnDoneCB func(ctx interface{}, err error)
+	isBusy   bool
+	lastRun  time.Time
+}
+
+func DefaultDoneCB(ctx interface{}, err error) {
+	if err != nil {
+		log.Error().Err(err).Msgf("task: %+v failure: %w", err)
+	}
 }
 
 func NewTask(desc string, fn func(ctx interface{}) error) *Task {
 	t := &Task{
-		lock: *NewLock(),
-		Desc: desc,
-		fn:   fn,
+		lock:     *NewLock(),
+		Desc:     desc,
+		fn:       fn,
+		fnDoneCB: DefaultDoneCB,
 	}
 
 	return t
@@ -89,10 +97,8 @@ func (t *Task) Run(ctx interface{}) error {
 			log.Err(err).Msg("task unlock failure")
 		}
 
-		if t.Err != nil {
-			// Uncomment below for stack trace of error
-			// log.Error().Msgf("task run failure: %+v", t.Err)
-			log.Error().Msgf("task run failure: %v", t.Err)
+		if t.fnDoneCB != nil {
+			t.fnDoneCB(t.Ctx, t.Err)
 		}
 	}()
 

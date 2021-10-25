@@ -18,9 +18,9 @@ import (
 
 type GitCacheHandler struct {
 	plugins.BasePlugin
-	cachePath string
-	gitProxy  string
-	r         *mux.Router
+	cachePath    string
+	forwardProxy string
+	r            *mux.Router
 }
 
 func init() {
@@ -38,7 +38,7 @@ func init() {
 
 func (p *GitCacheHandler) Init(opts *options.OptionValue) error {
 	if err := p.BasePlugin.Init(opts); err != nil {
-		return xerrors.Errorf("plugin: %s failed to initialize base: %w", p.Name(), err)
+		return err
 	}
 
 	cachePath := opts.GetDefault("cache.path", "").String()
@@ -57,106 +57,88 @@ func (p *GitCacheHandler) Init(opts *options.OptionValue) error {
 		p.r.HandleFunc(fmt.Sprintf(`/{path:.*?}%s`, item.Path), item.Handler).Methods(item.Method)
 	}
 
-	p.gitProxy = p.Opts.GetDefault("git.proxy", "").String()
+	p.forwardProxy = p.Opts.GetDefault("forward.proxy", "").String()
 
 	return nil
 }
 
 func (p *GitCacheHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, *http.Request, error) {
+	//
+
 	log.Debug().Msgf("%s handling request: %s", p.Name(), reqURL.String())
-	var (
-		err          error
-		upstreamHost string
-		upstreamURL  *url.URL
-	)
-
-	urlQuery := reqURL.Query()
-
 	// Find a matching route for our request
 	var match mux.RouteMatch
 	var hasRoute bool = p.r.Match(req, &match)
 
-	// We have a route, also might have an upstream
+	// Fetch and decode the upstream url
+	upstreamURL, err := utils.NormalizeURL(req.Header.Get("hb-git-upstream"))
+	if err != nil {
+		return nil, req, err
+	}
+
+	// Pass context between this request handler and our respective response handler
 	gitRequestContext := &GitRequestContext{
 		repoRoot: p.cachePath,
-		gitProxy: p.gitProxy,
+		gitProxy: p.forwardProxy,
+	}
+
+	// Shallow copy, not pointer assignment
+	gitRequestContext.upstream = &url.URL{}
+	if upstreamURL != nil {
+		*gitRequestContext.upstream = *upstreamURL
 	}
 
 	req = req.WithContext(context.WithValue(req.Context(), reqContextKey, gitRequestContext))
 
-	if _, ok := urlQuery["upstream"]; ok {
-		if upstreamHost, err = url.QueryUnescape(urlQuery.Get("upstream")); err != nil {
-			return nil, nil, xerrors.Errorf("failled to unescape upstream host: %s: %w", urlQuery.Get("upstream"), err)
-		}
+	if hasRoute {
+		req = mux.SetURLVars(req, match.Vars)
+		match.Handler.ServeHTTP(nil, req) // Handle the request, but you can't send anything as a response, ResponseHandler will do that
 
-		if upstreamURL, err = url.Parse(upstreamHost); err != nil {
-			return nil, nil, xerrors.Errorf("failled to parse url of upstream host: %s: %w", urlQuery.Get("upstream"), err)
-		}
-
-		// Shallow copy, not pointer assignment
-		gitRequestContext.upstream = &url.URL{}
-		*gitRequestContext.upstream = *upstreamURL
-
-		if !hasRoute {
-			// We don't support the path locally, so hopefully the upstream server does
-			// we might cache the path in the response
-			gitRequestContext.status = http.StatusNotFound
-			return upstreamURL, req, nil
+		if gitRequestContext.upstream == nil {
+			upstreamURL = nil
 		}
 	}
 
-	if !hasRoute {
-		// Don't have a route and don't have an upstream, so just generate a 404 in the response
-		gitRequestContext.status = http.StatusNotFound
-		return nil, req, nil
-	}
+	return upstreamURL, req, gitRequestContext.err
 
-	req = mux.SetURLVars(req, match.Vars)
-	match.Handler.ServeHTTP(nil, req) // Handle the request, but you can't send anything as a response, ResponseHandler will do that
-	status := gitRequestContext.status
-
-	if gitRequestContext.err != nil {
-		gitRequestContext.status = http.StatusInternalServerError
-		return nil, req, xerrors.Errorf("serve request route failure: %w", gitRequestContext.err)
-	}
-
-	if status == 0 {
-		status = http.StatusOK
-	}
-
-	if status != http.StatusOK {
-		// This request could not be fulfilled localy
-		if upstreamURL != nil {
-			// Get the upstream to serve the URL and possibly this plugin will cache the response
-			return upstreamURL, req, nil
-		}
-	}
-
-	// This plugin will now handle the response locally, which might be a 404
-	return nil, req, nil
 }
 
 func (p *GitCacheHandler) HandleResponse(w http.ResponseWriter, req *http.Request, body io.Reader, statusCode int) error {
 	log.Debug().Msgf("%s handling response: req: %s", p.Name(), req.URL.String())
 
-	if req.Method == http.MethodHead {
-		req.Method = http.MethodGet
+	// Find a matching route for our request
+	var match mux.RouteMatch
+	var hasRoute bool = p.r.Match(req, &match)
+
+	// Fetch and decode the upstream url
+	upstreamURL, err := utils.NormalizeURL(req.Header.Get("hb-git-upstream"))
+	if err != nil {
+		return err
 	}
 
-	var (
-		ok             bool
-		requestContext *GitRequestContext
-	)
+	if !hasRoute && utils.URLIsEmpty(upstreamURL) {
+		http.NotFound(w, req)
+		return nil
+	}
 
-	if requestContext, ok = req.Context().Value(reqContextKey).(*GitRequestContext); !ok {
-		log.Error().Msgf("unable to retrieve git cache context for this request: %s", req.URL.String())
-		if w != nil {
+	if hasRoute {
+		var (
+			reqCtx *GitRequestContext
+			ok     bool
+		)
+
+		if reqCtx, ok = req.Context().Value(reqContextKey).(*GitRequestContext); !ok {
 			http.Error(w, fmt.Sprintf("unable to retrieve git cache context for this request: %s", req.URL.String()), http.StatusInternalServerError)
+			return xerrors.Errorf("unable to retrieve git cache context for this request: %s", req.URL.String())
 		}
+
+		// Update the request context with the response body and status code
+		reqCtx.body = body
+		reqCtx.statusCode = statusCode
+
+		req = mux.SetURLVars(req, match.Vars)
+		match.Handler.ServeHTTP(w, req) // Handle the request, but you can't send anything as a response, ResponseHandler will do that
 	}
 
-	_ = requestContext
-
-	p.r.ServeHTTP(w, req)
 	return nil
 }

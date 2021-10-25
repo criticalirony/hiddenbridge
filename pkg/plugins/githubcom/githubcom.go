@@ -65,9 +65,7 @@ func (p *GithubHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*url.
 	cacheHost := p.Opts.Get("cache.host").String()
 	if len(cacheHost) > 0 {
 		// We have a caching host (plugin) so encode current request as a query param and pass onto the cacher
-		reqQuery := reqURL.Query()
-		reqQuery.Add("upstream", url.QueryEscape(reqURL.String()))
-		reqURL.RawQuery = reqQuery.Encode()
+		req.Header.Add("hb-git-upstream", reqURL.String())
 		reqURL.Host = p.Opts.Get("cache.host").String()
 	}
 

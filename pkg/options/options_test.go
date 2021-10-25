@@ -301,14 +301,14 @@ func TestSetTypeReassign(t *testing.T) {
 	require.Nil(t, err)
 
 	err = o1.Set("root.foo.bar", "value")
-	require.EqualError(t, err, "bar key type []options.OptionValue is immutable can not reassign")
+	require.EqualError(t, err, "key: bar existing type: []options.OptionValue is immutable and can not be reassigned")
 
 	o1 = &OptionValue{}
 	err = o1.Set("root.foo", 10)
 	require.Nil(t, err)
 
 	err = o1.Set("root.foo.bar", "value")
-	require.EqualError(t, err, "bar key type int is immutable can not reassign")
+	require.EqualError(t, err, "key: bar existing type: int is immutable and can not be reassigned")
 
 	o1 = &OptionValue{}
 	err = o1.Set("root.foo", nil)
@@ -323,7 +323,7 @@ func TestSetTypeReassign(t *testing.T) {
 
 	// Try and change "bar" to a new type - should fail
 	err = o1.Set("root.foo.bar.new", "new value")
-	require.EqualError(t, err, "new key type string is immutable can not reassign")
+	require.EqualError(t, err, "key: new existing type: string is immutable and can not be reassigned")
 
 	// Delete the value for "bar" so now it doesn't have any type
 	err = o1.Set("root.foo.bar", nil)
