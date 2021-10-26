@@ -1,40 +1,33 @@
 package utils
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"golang.org/x/xerrors"
 )
 
 func TestSimpleLock(t *testing.T) {
 	var (
-		err  error
-		lock *Lock
+		err error
 	)
 
-	lock = NewLock()
-	err = lock.Lock()
+	lock := &Lock{}
+	err = lock.Acquire(context.Background())
 	require.Nil(t, err)
+	require.True(t, lock.IsLocked())
 
 	go func() {
 		time.Sleep(1 * time.Second)
-		err := lock.UnLock()
-		require.Nil(t, err)
+		lock.Release()
 	}()
 
-	start := time.Now().UTC()
-	err = lock.Lock()
-	require.Nil(t, err)
-	duration := time.Now().UTC().Sub(start)
-	require.True(t, duration >= 1*time.Second, "lock only held for: %s", duration)
+	err = lock.AcquireWithTimeout(500 * time.Millisecond)
+	require.Equal(t, ErrLockTimeout, err)
 
-	err = lock.UnLock()
-	require.Nil(t, err)
-
-	err = lock.UnLock()
-	require.Equal(t, ErrNotLocked, xerrors.Unwrap(err))
+	time.Sleep(1 * time.Second)
+	require.False(t, lock.IsLocked())
 }
 
 func TestSimpleTryLock(t *testing.T) {
@@ -43,25 +36,21 @@ func TestSimpleTryLock(t *testing.T) {
 		lock *Lock
 	)
 
-	lock = NewLock()
-	err = lock.Lock()
+	ctx := context.Background()
+
+	lock = &Lock{}
+	err = lock.Acquire(ctx)
 	require.Nil(t, err)
 
 	go func() {
 		time.Sleep(1 * time.Second)
-		err := lock.UnLock()
-		require.Nil(t, err)
+		lock.Release()
 	}()
 
-	err = lock.TryLock()
-	require.Equal(t, ErrLockBusy, xerrors.Unwrap(err))
+	require.False(t, lock.TryAcquire())
 
-	err = lock.UnLock()
-	require.Nil(t, err)
+	lock.Release()
+	require.True(t, lock.TryAcquire())
 
-	err = lock.TryLock()
-	require.Nil(t, err)
-
-	err = lock.UnLock()
-	require.Nil(t, err)
+	lock.Release()
 }

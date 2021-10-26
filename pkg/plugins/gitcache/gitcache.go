@@ -16,6 +16,10 @@ import (
 	"golang.org/x/xerrors"
 )
 
+const (
+	HB_GIT_UPSTREAM_HEADER_FIELD = "hb-git-upstream"
+)
+
 type GitCacheHandler struct {
 	plugins.BasePlugin
 	cachePath    string
@@ -63,15 +67,18 @@ func (p *GitCacheHandler) Init(opts *options.OptionValue) error {
 }
 
 func (p *GitCacheHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, *http.Request, error) {
-	//
-
 	log.Debug().Msgf("%s handling request: %s", p.Name(), reqURL.String())
+
+	if req.Method == http.MethodHead {
+		req.Method = http.MethodGet
+	}
+
 	// Find a matching route for our request
 	var match mux.RouteMatch
 	var hasRoute bool = p.r.Match(req, &match)
 
 	// Fetch and decode the upstream url
-	upstreamURL, err := utils.NormalizeURL(req.Header.Get("hb-git-upstream"))
+	upstreamURL, err := utils.NormalizeURL(req.Header.Get(HB_GIT_UPSTREAM_HEADER_FIELD))
 	if err != nil {
 		return nil, req, err
 	}
@@ -83,8 +90,8 @@ func (p *GitCacheHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*ur
 	}
 
 	// Shallow copy, not pointer assignment
-	gitRequestContext.upstream = &url.URL{}
 	if upstreamURL != nil {
+		gitRequestContext.upstream = &url.URL{}
 		*gitRequestContext.upstream = *upstreamURL
 	}
 
@@ -106,15 +113,15 @@ func (p *GitCacheHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*ur
 func (p *GitCacheHandler) HandleResponse(w http.ResponseWriter, req *http.Request, body io.Reader, statusCode int) error {
 	log.Debug().Msgf("%s handling response: req: %s", p.Name(), req.URL.String())
 
-	// Find a matching route for our request
-	var match mux.RouteMatch
-	var hasRoute bool = p.r.Match(req, &match)
-
 	// Fetch and decode the upstream url
-	upstreamURL, err := utils.NormalizeURL(req.Header.Get("hb-git-upstream"))
+	upstreamURL, err := utils.NormalizeURL(req.Header.Get(HB_GIT_UPSTREAM_HEADER_FIELD))
 	if err != nil {
 		return err
 	}
+
+	// Find a matching route for our request
+	var match mux.RouteMatch
+	var hasRoute bool = p.r.Match(req, &match)
 
 	if !hasRoute && utils.URLIsEmpty(upstreamURL) {
 		http.NotFound(w, req)
@@ -136,8 +143,8 @@ func (p *GitCacheHandler) HandleResponse(w http.ResponseWriter, req *http.Reques
 		reqCtx.body = body
 		reqCtx.statusCode = statusCode
 
-		req = mux.SetURLVars(req, match.Vars)
-		match.Handler.ServeHTTP(w, req) // Handle the request, but you can't send anything as a response, ResponseHandler will do that
+		match.Handler.ServeHTTP(w, req) // Handle the response
+		return reqCtx.err
 	}
 
 	return nil

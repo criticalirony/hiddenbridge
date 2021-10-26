@@ -40,8 +40,10 @@ type GitRequestContext struct {
 }
 
 type GitRepoContext struct {
-	hash string
-	task *utils.Task
+	hash        string
+	lock        *utils.Lock
+	lastUpdated time.Time
+	ext         map[string]interface{}
 }
 
 const (
@@ -88,7 +90,8 @@ func getRepoContext(u *url.URL) *GitRepoContext {
 
 		repoContext = &GitRepoContext{
 			hash: hex.EncodeToString(rawHash[:]),
-			task: utils.NewTask("", nil),
+			lock: &utils.Lock{},
+			ext:  map[string]interface{}{},
 		}
 
 		log.Debug().Msgf("using generated repo key: %s: %s", contextKey, repoContext.hash)
@@ -173,7 +176,18 @@ func getInfoRefsReq(req *http.Request, reqCtx *GitRequestContext, repoCtx *GitRe
 			cloneURL.Path = repoPath
 			cloneURL.RawQuery = ""
 
-			repoCtx.task.SetFunction(func(ctx interface{}) error {
+			if time.Since(repoCtx.lastUpdated) < 5*time.Minute {
+				return nil // It hasn't been long enough since last repo update
+			}
+
+			task := utils.NewTask("", func(ctx interface{}) error {
+				if err := repoCtx.lock.AcquireWithTimeout(3600 * time.Second); err != nil {
+					return xerrors.Errorf("task: obtain repo lock failure: %w", err)
+				}
+				defer repoCtx.lock.Release()
+
+				repoCtx.lastUpdated = time.Now()
+
 				if err := git.Clone(cloneURL.String(), gitDir, true, true, reqCtx.gitProxy, 3600*time.Second); err != nil {
 					return xerrors.Errorf("task: run failure: %w", err)
 				}
@@ -182,17 +196,12 @@ func getInfoRefsReq(req *http.Request, reqCtx *GitRequestContext, repoCtx *GitRe
 					return xerrors.Errorf("task: git update-server-info failure: %w", err)
 				}
 
+				repoCtx.lastUpdated = time.Now()
 				return nil
-			})
+			}, nil)
 
-			if err := repoCtx.task.RunIfOlder(nil, 5*time.Minute); err != nil {
-				var errExpiry utils.ErrExpiry
-
-				if errors.As(err, &errExpiry) {
-					log.Warn().Err(errExpiry).Msg("task run failure: task has not expired")
-				} else if !errors.Is(err, utils.ErrLockBusy) {
-					return xerrors.Errorf("failed to clone repo: %s: %w", cloneURL.String(), err)
-				}
+			if err := task.Run(nil); err != nil {
+				return xerrors.Errorf("failed to clone repo: %s: %w", cloneURL.String(), err)
 			}
 		} else {
 			if err := git.Init(gitDir, true, 10*time.Second); err != nil {
@@ -205,7 +214,17 @@ func getInfoRefsReq(req *http.Request, reqCtx *GitRequestContext, repoCtx *GitRe
 		}
 	} else if hasRepo && !utils.URLIsEmpty(reqCtx.upstream) {
 		// we have an existing repo dir and an upstream.. so just task an update
-		repoCtx.task.SetFunction(func(ctx interface{}) error {
+		if time.Since(repoCtx.lastUpdated) < 5*time.Minute {
+			return nil // It hasn't been long enough since last repo update
+		}
+
+		task := utils.NewTask("", func(ctx interface{}) error {
+			if err := repoCtx.lock.AcquireWithTimeout(3600 * time.Second); err != nil {
+				return xerrors.Errorf("task: obtain repo lock failure: %w", err)
+			}
+			defer repoCtx.lock.Release()
+
+			repoCtx.lastUpdated = time.Now()
 			if _, err := git.Remote("update", true, gitDir, reqCtx.gitProxy, 3600*time.Second); err != nil {
 				return xerrors.Errorf("task: git remote update failure: %w", err)
 			}
@@ -213,18 +232,12 @@ func getInfoRefsReq(req *http.Request, reqCtx *GitRequestContext, repoCtx *GitRe
 			if _, err := git.Run("", gitDir, 60*time.Second, "update-server-info"); err != nil {
 				return xerrors.Errorf("task: git update-server-info failure: %w", err)
 			}
-
+			repoCtx.lastUpdated = time.Now()
 			return nil
-		})
+		}, nil)
 
-		if err := repoCtx.task.RunIfOlder(nil, 5*time.Minute); err != nil {
-			var errExpiry utils.ErrExpiry
-
-			if errors.As(err, &errExpiry) {
-				log.Warn().Err(errExpiry).Msg("task run failure: task has not expired")
-			} else if !errors.Is(err, utils.ErrLockBusy) {
-				return xerrors.Errorf("failed to update repo: %s: %w", gitDir, err)
-			}
+		if err := task.Run(nil); err != nil {
+			return xerrors.Errorf("failed to update repo: %s: %w", gitDir, err)
 		}
 	}
 
@@ -257,6 +270,7 @@ func getInfoRefsResp(w http.ResponseWriter, req *http.Request, reqCtx *GitReques
 		return xerrors.Errorf("local cache refs file: %s read failure: %w", refsFile, err)
 	}
 
+	w.WriteHeader(http.StatusOK)
 	w.Write(refsData)
 
 	return nil

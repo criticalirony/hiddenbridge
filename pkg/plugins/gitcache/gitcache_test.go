@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -52,19 +53,21 @@ func init() {
 	}
 
 	selfgch := self.(*GitCacheHandler)
-	// selfgch.r.HandleFunc("/test", testRoute)
 	selfgch.r.HandleFunc(`/{path:.*?}/test`, testRoute)
+	selfgch.r.HandleFunc("/{path:.*?}", testRoute)
 }
 
 func testRoute(w http.ResponseWriter, r *http.Request) {
 	var (
+		err            error
 		ok             bool
 		requestContext *GitRequestContext
 	)
 
 	urlQuery := r.URL.Query()
-	isServedLocal := urlQuery.Get("served")
-	isLaunchingTask := urlQuery.Get("task")
+	isServedLocal := urlQuery.Get("served")        // Is this route served locally
+	isLaunchingTask := urlQuery.Get("task")        // Should this route launch an async task
+	checkLastUpdatedRaw := urlQuery.Get("updated") // Should we consider when the repo was last updated before running a new task
 
 	if requestContext, ok = r.Context().Value(reqContextKey).(*GitRequestContext); !ok {
 		log.Panic().Msgf("unable to retrieve git cache context for this request: %s", r.URL.String())
@@ -72,8 +75,6 @@ func testRoute(w http.ResponseWriter, r *http.Request) {
 
 	if isServedLocal == "true" {
 		requestContext.upstream = nil
-	} else {
-		requestContext.upstream = &url.URL{}
 	}
 
 	if isLaunchingTask == "true" {
@@ -92,7 +93,21 @@ func testRoute(w http.ResponseWriter, r *http.Request) {
 			log.Panic().Msgf("launch task failure: repo context not available")
 		}
 
-		if err := repoContext.task.SetFunction(func(ctx interface{}) error {
+		var checkLastUpdated time.Duration
+		if checkLastUpdatedRaw != "" {
+			checkLastUpdated, err = time.ParseDuration(checkLastUpdatedRaw)
+			if err != nil {
+				log.Panic().Err(err).Msgf("launch task failure: check since updated: %s cannot be parsed", checkLastUpdatedRaw)
+			}
+		}
+
+		if time.Since(repoContext.lastUpdated) < checkLastUpdated {
+			repoContext.ext["err"] = utils.ErrTaskNotExpired
+			return
+		}
+
+		task := utils.NewTask("", func(ctx interface{}) error {
+			repoContext.lastUpdated = time.Now()
 			cmdCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
@@ -100,15 +115,15 @@ func testRoute(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				log.Panic().Err(err).Msgf("command run test failure")
 			}
-
+			repoContext.lastUpdated = time.Now()
 			return nil
-		}); err != nil {
-			repoContext.task.Err = err
-			log.Warn().Err(err).Msg("command run test failure")
-		} else if err := repoContext.task.Run(nil); err != nil {
-			repoContext.task.Err = err
+		}, nil)
+
+		if err := task.Run(nil); err != nil {
 			log.Warn().Err(err).Msg("command run test failure")
 		}
+
+		repoContext.ext["task"] = task
 	}
 }
 
@@ -129,27 +144,43 @@ func TestGitCacheSimple(t *testing.T) {
 		resp *httptest.ResponseRecorder
 	)
 
+	input := "this is a refs file\n"
+
 	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/sample/project.git/info/refs?service=git-upload-pack", host), nil)
 	resp = httptest.NewRecorder()
 
-	reqURL, req, err := self.HandleRequest(req.URL, req)
+	_, req, err = self.HandleRequest(req.URL, req)
+	require.Nil(t, err)
+	require.NotNil(t, req)
 
-	_ = req
+	repoPath, ok := mux.Vars(req)["path"]
+	require.True(t, ok)
 
-	gitRepoContext := getRepoContext(reqURL)
-	tempRepoPath := filepath.Join(selfgch.cachePath, gitRepoContext.hash)
-	os.RemoveAll(tempRepoPath) // Best effort
-	os.MkdirAll(filepath.Join(tempRepoPath, "info"), os.ModePerm)
-	os.WriteFile(filepath.Join(tempRepoPath, "info", "refs"), []byte("this is a refs file"), os.ModePerm)
+	repoCtx := getRepoContext(&url.URL{
+		Host: req.Host,
+		Path: repoPath,
+	})
 
-	_, _ = err, resp
+	localRepoDir := filepath.Join(selfgch.cachePath, repoCtx.hash)
+	if !strings.HasPrefix(repoPath, "/") {
+		repoPath = "/" + repoPath
+	}
+	localFilePath := strings.TrimPrefix(req.URL.Path, repoPath)
 
-	// req = req.WithContext(context.WithValue(req.Context(), reqContextKey, gitRequestContext))
-	// err = self.HandleResponse(resp, req, nil, http.StatusOK)
-	// require.Nil(t, err)
+	os.MkdirAll(filepath.Join(localRepoDir, filepath.Dir(localFilePath)), os.ModePerm)
+	os.WriteFile(filepath.Join(localRepoDir, localFilePath), []byte(input), os.ModePerm)
+	defer os.RemoveAll(localRepoDir) // Best effort
 
-	// res := resp.Result()
-	// require.NotEqual(t, http.StatusNotFound, res.StatusCode)
+	err = self.HandleResponse(resp, req, nil, http.StatusOK)
+	require.Nil(t, err)
+
+	res := resp.Result()
+	require.Equal(t, http.StatusOK, res.StatusCode)
+
+	body, err := ioutil.ReadAll(resp.Body)
+	require.Nil(t, err)
+	require.Equal(t, input, string(body))
+
 }
 
 func TestGitCacheMethodHead(t *testing.T) {
@@ -159,9 +190,33 @@ func TestGitCacheMethodHead(t *testing.T) {
 		resp *httptest.ResponseRecorder
 	)
 
+	input := "this is a refs file\n"
+
 	// Requesting HEAD
 	req = httptest.NewRequest(http.MethodHead, fmt.Sprintf("http://%s/sample/project.git/info/refs?service=git-upload-pack", host), nil)
 	resp = httptest.NewRecorder()
+
+	_, req, err = self.HandleRequest(req.URL, req)
+	require.Nil(t, err)
+	require.NotNil(t, req)
+
+	repoPath, ok := mux.Vars(req)["path"]
+	require.True(t, ok)
+
+	repoCtx := getRepoContext(&url.URL{
+		Host: req.Host,
+		Path: repoPath,
+	})
+
+	localRepoDir := filepath.Join(selfgch.cachePath, repoCtx.hash)
+	if !strings.HasPrefix(repoPath, "/") {
+		repoPath = "/" + repoPath
+	}
+	localFilePath := strings.TrimPrefix(req.URL.Path, repoPath)
+
+	os.MkdirAll(filepath.Join(localRepoDir, filepath.Dir(localFilePath)), os.ModePerm)
+	os.WriteFile(filepath.Join(localRepoDir, localFilePath), []byte(input), os.ModePerm)
+	defer os.RemoveAll(localRepoDir) // Best effort
 
 	err = self.HandleResponse(resp, req, nil, http.StatusOK)
 	require.Nil(t, err)
@@ -192,7 +247,9 @@ func TestGitCacheHandleRequest(t *testing.T) {
 	// 5. Local route, not served, no upstream
 	// 6. Local route, not served, upstream
 
-	upstreamPath := "https://upstream.org/project.git/info/refs?service=git-upload-pack"
+	upstreamPath := "https://upstream.org:443/project.git/info/refs?service=git-upload-pack"
+	upstreamURL, err := utils.NormalizeURL(upstreamPath)
+	require.Nil(t, err)
 
 	// Test 1.
 	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/local/path/not/found", host), nil)
@@ -206,16 +263,16 @@ func TestGitCacheHandleRequest(t *testing.T) {
 	require.Nil(t, requestContext.upstream)
 
 	// Test 2.
-	encodedUpstreamPath := url.QueryEscape(upstreamPath)
-	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/local/path/not/found?upstream=%s", host, encodedUpstreamPath), nil)
+	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/local/path/not/found", host), nil)
+	req.Header.Add(HB_GIT_UPSTREAM_HEADER_FIELD, upstreamPath)
 	resultURL, resultReq, err = self.HandleRequest(req.URL, req)
 	require.Nil(t, err)
-	require.Equal(t, upstreamPath, resultURL.String())
+	require.Equal(t, upstreamURL.String(), resultURL.String())
 	require.NotNil(t, resultReq)
 
 	requestContext, ok = resultReq.Context().Value(reqContextKey).(*GitRequestContext)
 	require.True(t, ok)
-	require.Equal(t, upstreamPath, requestContext.upstream.String())
+	require.Equal(t, upstreamURL.String(), requestContext.upstream.String())
 
 	// Test 3.
 	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/test?served=true", host), nil)
@@ -229,7 +286,8 @@ func TestGitCacheHandleRequest(t *testing.T) {
 	require.Nil(t, requestContext.upstream)
 
 	// Test 4.
-	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/test?served=true&upstream=%s", host, encodedUpstreamPath), nil)
+	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/test?served=true", host), nil)
+	req.Header.Add(HB_GIT_UPSTREAM_HEADER_FIELD, upstreamPath)
 	resultURL, resultReq, err = self.HandleRequest(req.URL, req)
 	require.Nil(t, err)
 	require.Nil(t, resultURL)
@@ -237,7 +295,7 @@ func TestGitCacheHandleRequest(t *testing.T) {
 
 	requestContext, ok = resultReq.Context().Value(reqContextKey).(*GitRequestContext)
 	require.True(t, ok)
-	require.Equal(t, upstreamPath, requestContext.upstream.String())
+	require.Nil(t, requestContext.upstream)
 
 	// Test 5.
 	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/test?served=false", host), nil)
@@ -251,7 +309,8 @@ func TestGitCacheHandleRequest(t *testing.T) {
 	require.Nil(t, requestContext.upstream)
 
 	// Test 6.
-	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/test?served=false&upstream=%s", host, encodedUpstreamPath), nil)
+	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/test?served=false", host), nil)
+	req.Header.Add(HB_GIT_UPSTREAM_HEADER_FIELD, upstreamPath)
 	resultURL, resultReq, err = self.HandleRequest(req.URL, req)
 	require.Nil(t, err)
 	require.Equal(t, upstreamPath, resultURL.String())
@@ -294,7 +353,11 @@ func TestGitCacheLaunchTask(t *testing.T) {
 	require.True(t, ok)
 	require.Nil(t, requestContext.upstream)
 
-	err = repoContext.task.Wait(3 * time.Second)
+	taskIface, ok := repoContext.ext["task"]
+	require.True(t, ok)
+
+	task := taskIface.(*utils.Task)
+	err = task.Wait(3 * time.Second)
 	require.Nil(t, err)
 
 	data, err := ioutil.ReadFile(filepath.Join(repoPath, "test.txt"))
@@ -314,9 +377,9 @@ func TestGitCacheReLaunchBusyTask(t *testing.T) {
 		requestContext *GitRequestContext
 	)
 
-	testPath := "project/repo"
+	testPath := "project/repo2"
 
-	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/%s/test?served=false&task=true", host, testPath), nil)
+	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/%s/test?served=false&task=true&updated=10s", host, testPath), nil)
 	repoContext := getRepoContext(&url.URL{
 		Host: req.Host,
 		Path: testPath,
@@ -345,14 +408,21 @@ func TestGitCacheReLaunchBusyTask(t *testing.T) {
 	require.Nil(t, resultURL)
 	require.NotNil(t, resultReq)
 
-	require.True(t, errors.Is(repoContext.task.Err, utils.ErrLockBusy))
-	err = repoContext.task.Wait(3 * time.Second)
+	errIface, ok := repoContext.ext["err"]
+	require.True(t, ok)
+	err = errIface.(error)
+	require.True(t, errors.Is(err, utils.ErrTaskNotExpired))
+
+	taskIface, ok := repoContext.ext["task"]
+	require.True(t, ok)
+	task := taskIface.(*utils.Task)
+
+	err = task.Wait(3 * time.Second)
 	require.Nil(t, err)
 
 	data, err := ioutil.ReadFile(filepath.Join(repoPath, "test.txt"))
 	require.Nil(t, err)
 	require.Equal(t, "I am a successful test result\n", string(data))
-	err = repoContext.task.Wait(3 * time.Second)
-	require.Nil(t, err)
+
 	os.RemoveAll(repoPath)
 }

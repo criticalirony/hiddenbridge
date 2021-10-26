@@ -13,6 +13,10 @@ import (
 	"golang.org/x/xerrors"
 )
 
+const (
+	HB_GIT_UPSTREAM_HEADER_FIELD = "hb-git-upstream"
+)
+
 type GithubHandler struct {
 	plugins.BasePlugin
 }
@@ -65,7 +69,7 @@ func (p *GithubHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*url.
 	cacheHost := p.Opts.Get("cache.host").String()
 	if len(cacheHost) > 0 {
 		// We have a caching host (plugin) so encode current request as a query param and pass onto the cacher
-		req.Header.Add("hb-git-upstream", reqURL.String())
+		req.Header.Add(HB_GIT_UPSTREAM_HEADER_FIELD, reqURL.String())
 		reqURL.Host = p.Opts.Get("cache.host").String()
 	}
 

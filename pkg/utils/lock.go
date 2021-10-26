@@ -1,71 +1,118 @@
 package utils
 
 import (
+	"container/list"
 	"context"
 	"errors"
+	"sync"
 	"time"
-
-	"golang.org/x/xerrors"
 )
 
 var (
-	ErrNotLocked = errors.New("not locked")
-	ErrLockBusy  = errors.New("lock busy")
+	ErrLockBusy    = errors.New("lock busy")
+	ErrLockTimeout = errors.New("lock timeout")
 )
 
 type Lock struct {
-	ch chan struct{}
+	locked  bool
+	mu      sync.Mutex
+	waiters list.List
 }
 
-func NewLock() *Lock {
-	l := &Lock{
-		ch: make(chan struct{}, 1),
+func (l *Lock) Acquire(ctx context.Context) error {
+	if l == nil {
+		return nil // We can always acquire a nil lock
 	}
 
-	// Mark channel as unlocked
-	l.ch <- struct{}{}
+	l.mu.Lock()
 
-	return l
-}
-
-func (l *Lock) Lock() error {
-	return l.LockWithContext(context.Background())
-}
-
-func (l *Lock) LockWithContext(ctx context.Context) error {
-	select {
-	case <-l.ch:
+	if !l.locked && l.waiters.Len() == 0 {
+		l.locked = true
+		l.mu.Unlock()
 		return nil
+	}
+
+	ready := make(chan struct{})
+	elem := l.waiters.PushBack(ready)
+	l.mu.Unlock()
+
+	select {
 	case <-ctx.Done():
-		return xerrors.Errorf("lock with context cancelled: %w", ctx.Err())
+		err := ctx.Err()
+		l.mu.Lock()
+		select {
+		case <-ready: // we acquired lock after cancel, ignore cancel
+			err = nil
+		default:
+			isFront := l.waiters.Front() == elem
+			l.waiters.Remove(elem)
+			if isFront {
+				l.notifyWaiters()
+			}
+		}
+		l.mu.Unlock()
+		return err
+	case <-ready:
+		return nil
 	}
 }
 
-func (l *Lock) LockWithTimeout(timeout time.Duration) error {
+func (l *Lock) TryAcquire() bool {
+	l.mu.Lock()
+	success := !l.locked && l.waiters.Len() == 0
+	if success {
+		l.locked = true
+	}
+	l.mu.Unlock()
+	return success
+}
+
+func (l *Lock) AcquireWithTimeout(timeout time.Duration) error {
+	if l == nil {
+		return nil // We can always acquire a nil lock
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	return l.LockWithContext(ctx)
-}
 
-func (l *Lock) UnLock() error {
-	var err error
-
-	select {
-	case l.ch <- struct{}{}:
-		err = nil
-	default:
-		err = xerrors.Errorf("failed to unlock: %w", ErrNotLocked)
+	err := l.Acquire(ctx)
+	if err != nil && errors.Is(err, context.DeadlineExceeded) {
+		err = ErrLockTimeout
 	}
 
 	return err
 }
 
-func (l *Lock) TryLock() error {
+func (l *Lock) IsLocked() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 
-	select {
-	case <-l.ch:
-		return nil
-	default:
-		return xerrors.Errorf("failed to lock: %w", ErrLockBusy)
+	return l.locked
+}
+
+func (l *Lock) Release() {
+	if l == nil {
+		return // We can always release a nil lock
 	}
+
+	l.mu.Lock()
+	l.locked = false
+	l.notifyWaiters()
+	l.mu.Unlock()
+}
+
+func (l *Lock) notifyWaiters() {
+	if l.locked {
+		return
+	}
+
+	next := l.waiters.Front()
+	if next == nil {
+		return
+	}
+
+	w := next.Value.(chan struct{})
+	l.waiters.Remove(next)
+	l.locked = true
+	close(w)
 }

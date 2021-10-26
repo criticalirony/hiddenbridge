@@ -13,7 +13,7 @@ import (
 func TestSimpleTask(t *testing.T) {
 	output := &strings.Builder{}
 
-	task := NewTask("task1", nil)
+	task := NewTask("task1", nil, nil)
 	task.SetFunction(func(ctx interface{}) error {
 		output := ctx.(*strings.Builder)
 		output.WriteString("I'm a simple task")
@@ -31,7 +31,7 @@ func TestSimpleTask(t *testing.T) {
 func TestBusyTask(t *testing.T) {
 	output := &strings.Builder{}
 
-	task := NewTask("task1", nil)
+	task := NewTask("task1", nil, nil)
 	task.SetFunction(func(ctx interface{}) error {
 		output := ctx.(*strings.Builder)
 
@@ -49,8 +49,8 @@ func TestBusyTask(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	err = task.Run(output)
+	require.True(t, errors.Is(err, ErrTaskBusy))
 	require.True(t, task.IsBusy())
-	require.True(t, errors.Is(err, ErrLockBusy))
 
 	err = task.Wait(-1)
 	require.Nil(t, err)

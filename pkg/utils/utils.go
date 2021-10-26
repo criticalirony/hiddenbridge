@@ -66,6 +66,7 @@ func URLIsEmpty(u *url.URL) bool {
 
 func NormalizeURL(rawURL string) (*url.URL, error) {
 	u, err := url.Parse(rawURL)
+
 	if err != nil {
 		// This occurs when there is no sheme and the host starts with a number; i.e. an IP address
 		if !strings.HasPrefix(rawURL, "http") {
@@ -88,7 +89,12 @@ func NormalizeURL(rawURL string) (*url.URL, error) {
 	if URLIsEmpty(u) {
 		// An empty url is not necessarily an error
 		return nil, nil
-	} else if len(u.Scheme) == 0 && len(u.Host) == 0 && len(u.Path) > 0 {
+	}
+
+	rawQuery := u.RawQuery
+	rawFragment := u.RawFragment
+
+	if len(u.Scheme) == 0 && len(u.Host) == 0 && len(u.Path) > 0 {
 		// Assume no scheme and no port
 		// u.path == bob.com
 		host, path := SplitHostPath(rawURL)
@@ -133,6 +139,8 @@ func NormalizeURL(rawURL string) (*url.URL, error) {
 		return nil, xerrors.Errorf("malformed url %s", u.String())
 	}
 
+	u.RawQuery = rawQuery
+	u.RawFragment = rawFragment
 	return u, nil
 }
 

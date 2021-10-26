@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -10,7 +11,8 @@ import (
 )
 
 var (
-	ErrNoFunction = errors.New("no function")
+	ErrTaskBusy       = errors.New("task busy")
+	ErrTaskNotExpired = errors.New("task not expired")
 )
 
 type ErrExpiry struct {
@@ -43,62 +45,51 @@ func (e ErrExpiry) Expired() bool {
 }
 
 type Task struct {
-	lock     Lock
-	Desc     string
-	Ctx      interface{}
-	Err      error
-	fn       func(ctx interface{}) error
-	fnDoneCB func(ctx interface{}, err error)
-	isBusy   bool
-	lastRun  time.Time
+	Name      string
+	RunCtx    interface{}
+	Err       error
+	fn        func(ctx interface{}) error
+	fnDoneCB  func(task *Task, runctx interface{}, err error)
+	completed chan struct{}
 }
 
-func DefaultDoneCB(ctx interface{}, err error) {
+func TaskDefaultDoneCB(task *Task, runctx interface{}, err error) {
 	if err != nil {
-		log.Error().Err(err).Msgf("task: %+v failure: %w", err)
+		log.Error().Err(err).Msgf("task: %+v failure", task)
 	}
 }
 
-func NewTask(desc string, fn func(ctx interface{}) error) *Task {
+func NewTask(name string, fn func(ctx interface{}) error, cb func(task *Task, runctx interface{}, err error)) *Task {
 	t := &Task{
-		lock:     *NewLock(),
-		Desc:     desc,
+		Name:     name,
 		fn:       fn,
-		fnDoneCB: DefaultDoneCB,
+		fnDoneCB: cb,
+	}
+
+	if t.fnDoneCB == nil {
+		t.fnDoneCB = TaskDefaultDoneCB
 	}
 
 	return t
 }
 
 func (t *Task) Run(ctx interface{}) error {
-	if t.fn == nil {
-		return xerrors.Errorf("failed to run task: %w", ErrNoFunction)
+	if t.IsBusy() {
+		return ErrTaskBusy
 	}
 
-	if err := t.lock.TryLock(); err != nil {
-		return xerrors.Errorf("failed to run task: %w", err)
-	}
-
-	t.Ctx = ctx
+	t.RunCtx = ctx
 
 	started := make(chan struct{})
+	t.completed = make(chan struct{})
 	go func() {
-		t.isBusy = true
+		defer close(t.completed)
 		close(started)
-		t.lastRun = time.Now().UTC()
-		log.Debug().Msgf("task: %v started: %s", t.fn, t.lastRun)
-		t.Err = t.fn(ctx)
-		t.isBusy = false
-		startRun := t.lastRun
-		t.lastRun = time.Now().UTC()
-		log.Debug().Msgf("task: %v completed: %s (%s)", t.fn, t.lastRun, t.lastRun.Sub(startRun))
-
-		if err := t.lock.UnLock(); err != nil {
-			log.Err(err).Msg("task unlock failure")
+		if t.fn != nil {
+			t.Err = t.fn(t.RunCtx)
 		}
-
 		if t.fnDoneCB != nil {
-			t.fnDoneCB(t.Ctx, t.Err)
+			t.fnDoneCB(t, t.RunCtx, t.Err)
 		}
 	}()
 
@@ -107,44 +98,49 @@ func (t *Task) Run(ctx interface{}) error {
 	return nil
 }
 
-func (t *Task) RunIfOlder(ctx interface{}, dur time.Duration) error {
-	taskAgeOff := t.lastRun.Add(dur)
-	if time.Now().UTC().Before(taskAgeOff) {
-		return xerrors.Errorf("task run failure: %w", NewErrExpiryOn(taskAgeOff))
+func (t *Task) IsBusy() bool {
+	if t.completed == nil {
+		return false
 	}
 
-	return t.Run(ctx)
-}
-
-func (t *Task) IsBusy() bool {
-	return t.isBusy
+	select {
+	case <-t.completed:
+		return false
+	default:
+		return true
+	}
 }
 
 func (t *Task) Wait(timeout time.Duration) error {
-	if !t.isBusy {
+	if !t.IsBusy() {
 		return nil
 	}
 
-	defer t.lock.UnLock()
+	var (
+		ctx    context.Context
+		cancel context.CancelFunc
+	)
 
 	if timeout <= 0 {
-		if err := t.lock.Lock(); err != nil {
-			return xerrors.Errorf("wait for task completion failure: %w", err)
-		}
-	} else if err := t.lock.LockWithTimeout(timeout); err != nil {
-		return xerrors.Errorf("wait for task completion failure: %w", err)
+		ctx, cancel = context.WithCancel(context.Background())
+	} else {
+		ctx, cancel = context.WithTimeout(context.Background(), timeout)
 	}
 
-	return nil
+	defer cancel()
+
+	select {
+	case <-ctx.Done():
+		return xerrors.Errorf("wait for task completion failure: %w", ctx.Err())
+	case <-t.completed:
+		return nil
+	}
 }
 
-func (t *Task) SetFunction(fn func(ctx interface{}) error) error {
-	if err := t.lock.TryLock(); err != nil {
-		return xerrors.Errorf("failed to set function: %w", ErrLockBusy)
-	}
-
-	defer t.lock.UnLock()
-
+func (t *Task) SetFunction(fn func(ctx interface{}) error) {
 	t.fn = fn
-	return nil
+}
+
+func (t *Task) SetCompletedCB(fn func(task *Task, runctx interface{}, err error)) {
+	t.fnDoneCB = fn
 }
