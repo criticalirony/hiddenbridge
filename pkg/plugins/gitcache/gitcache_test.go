@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"hiddenbridge/pkg/options"
 	"hiddenbridge/pkg/plugins"
+	"hiddenbridge/pkg/server"
 	"hiddenbridge/pkg/utils"
 	"hiddenbridge/pkg/utils/command"
 	"io/ioutil"
@@ -57,35 +58,39 @@ func init() {
 	selfgch.r.HandleFunc("/{path:.*?}", testRoute)
 }
 
-func testRoute(w http.ResponseWriter, r *http.Request) {
+func testRoute(w http.ResponseWriter, req *http.Request) {
 	var (
-		err            error
-		ok             bool
-		requestContext *GitRequestContext
+		err    error
+		ok     bool
+		reqCtx server.RequestContext
 	)
 
-	urlQuery := r.URL.Query()
-	isServedLocal := urlQuery.Get("served")        // Is this route served locally
+	urlQuery := req.URL.Query()
 	isLaunchingTask := urlQuery.Get("task")        // Should this route launch an async task
+	isServedLocal := urlQuery.Get("served")        // Should this route serve request locally regardless of upstream
 	checkLastUpdatedRaw := urlQuery.Get("updated") // Should we consider when the repo was last updated before running a new task
 
-	if requestContext, ok = r.Context().Value(reqContextKey).(*GitRequestContext); !ok {
-		log.Panic().Msgf("unable to retrieve git cache context for this request: %s", r.URL.String())
+	if reqCtx, ok = req.Context().Value(server.ReqContextKey).(server.RequestContext); !ok {
+		log.Panic().Msgf("unable to retrieve git cache context for this request: %s", req.URL.String())
 	}
 
 	if isServedLocal == "true" {
-		requestContext.upstream = nil
+		reqCtx["upstream"] = nil // Serving locally remove the upstream
 	}
 
 	if isLaunchingTask == "true" {
-		testRoot := requestContext.repoRoot
-		testPath, ok := mux.Vars(r)["path"]
+		var testRoot string
+		if !utils.As(reqCtx["reporoot"], &testRoot) || testRoot == "" {
+			log.Panic().Msgf("launch task failure: no repo root provided")
+		}
+
+		testPath, ok := mux.Vars(req)["path"]
 		if !ok {
 			log.Panic().Msgf("launch task failure: no path provided")
 		}
 
 		repoContext := getRepoContext(&url.URL{
-			Host: r.Host,
+			Host: req.Host,
 			Path: testPath,
 		})
 
@@ -149,6 +154,9 @@ func TestGitCacheSimple(t *testing.T) {
 	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/sample/project.git/info/refs?service=git-upload-pack", host), nil)
 	resp = httptest.NewRecorder()
 
+	reqCtx := server.RequestContext{}
+	req = req.WithContext(context.WithValue(req.Context(), server.ReqContextKey, reqCtx))
+
 	_, req, err = self.HandleRequest(req.URL, req)
 	require.Nil(t, err)
 	require.NotNil(t, req)
@@ -196,6 +204,9 @@ func TestGitCacheMethodHead(t *testing.T) {
 	req = httptest.NewRequest(http.MethodHead, fmt.Sprintf("http://%s/sample/project.git/info/refs?service=git-upload-pack", host), nil)
 	resp = httptest.NewRecorder()
 
+	reqCtx := server.RequestContext{}
+	req = req.WithContext(context.WithValue(req.Context(), server.ReqContextKey, reqCtx))
+
 	_, req, err = self.HandleRequest(req.URL, req)
 	require.Nil(t, err)
 	require.NotNil(t, req)
@@ -231,12 +242,9 @@ func TestGitCacheMethodHead(t *testing.T) {
 func TestGitCacheHandleRequest(t *testing.T) {
 	var (
 		err       error
-		ok        bool
 		req       *http.Request
 		resultURL *url.URL
 		resultReq *http.Request
-
-		requestContext *GitRequestContext
 	)
 
 	// Test cases
@@ -247,78 +255,66 @@ func TestGitCacheHandleRequest(t *testing.T) {
 	// 5. Local route, not served, no upstream
 	// 6. Local route, not served, upstream
 
-	upstreamPath := "https://upstream.org:443/project.git/info/refs?service=git-upload-pack"
-	upstreamURL, err := utils.NormalizeURL(upstreamPath)
+	upstreamHost := "upstream.org:443"
+	upstreamRaw := fmt.Sprintf("https://%s/project.git/info/refs?service=git-upload-pack", upstreamHost)
+	upstreamURL, err := utils.NormalizeURL(upstreamRaw)
 	require.Nil(t, err)
+
+	reqCtx := server.RequestContext{}
 
 	// Test 1.
 	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/local/path/not/found", host), nil)
+	req = req.WithContext(context.WithValue(req.Context(), server.ReqContextKey, reqCtx))
+
 	resultURL, resultReq, err = self.HandleRequest(req.URL, req)
 	require.Nil(t, err)
 	require.Nil(t, resultURL)
 	require.NotNil(t, resultReq)
 
-	requestContext, ok = resultReq.Context().Value(reqContextKey).(*GitRequestContext)
-	require.True(t, ok)
-	require.Nil(t, requestContext.upstream)
-
 	// Test 2.
-	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/local/path/not/found", host), nil)
-	req.Header.Add(HB_GIT_UPSTREAM_HEADER_FIELD, upstreamPath)
+	req = httptest.NewRequest(http.MethodGet, upstreamRaw, nil)
+	req = req.WithContext(context.WithValue(req.Context(), server.ReqContextKey, reqCtx))
+
 	resultURL, resultReq, err = self.HandleRequest(req.URL, req)
 	require.Nil(t, err)
 	require.Equal(t, upstreamURL.String(), resultURL.String())
 	require.NotNil(t, resultReq)
 
-	requestContext, ok = resultReq.Context().Value(reqContextKey).(*GitRequestContext)
-	require.True(t, ok)
-	require.Equal(t, upstreamURL.String(), requestContext.upstream.String())
-
 	// Test 3.
 	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/test?served=true", host), nil)
+	req = req.WithContext(context.WithValue(req.Context(), server.ReqContextKey, reqCtx))
+
 	resultURL, resultReq, err = self.HandleRequest(req.URL, req)
 	require.Nil(t, err)
 	require.Nil(t, resultURL)
 	require.NotNil(t, resultReq)
-
-	requestContext, ok = resultReq.Context().Value(reqContextKey).(*GitRequestContext)
-	require.True(t, ok)
-	require.Nil(t, requestContext.upstream)
 
 	// Test 4.
-	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/test?served=true", host), nil)
-	req.Header.Add(HB_GIT_UPSTREAM_HEADER_FIELD, upstreamPath)
+	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/test?served=true", upstreamHost), nil)
+	req = req.WithContext(context.WithValue(req.Context(), server.ReqContextKey, reqCtx))
+
 	resultURL, resultReq, err = self.HandleRequest(req.URL, req)
 	require.Nil(t, err)
 	require.Nil(t, resultURL)
 	require.NotNil(t, resultReq)
-
-	requestContext, ok = resultReq.Context().Value(reqContextKey).(*GitRequestContext)
-	require.True(t, ok)
-	require.Nil(t, requestContext.upstream)
 
 	// Test 5.
 	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/test?served=false", host), nil)
+	req = req.WithContext(context.WithValue(req.Context(), server.ReqContextKey, reqCtx))
+
 	resultURL, resultReq, err = self.HandleRequest(req.URL, req)
 	require.Nil(t, err)
 	require.Nil(t, resultURL)
 	require.NotNil(t, resultReq)
 
-	requestContext, ok = resultReq.Context().Value(reqContextKey).(*GitRequestContext)
-	require.True(t, ok)
-	require.Nil(t, requestContext.upstream)
-
 	// Test 6.
-	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/test?served=false", host), nil)
-	req.Header.Add(HB_GIT_UPSTREAM_HEADER_FIELD, upstreamPath)
+	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/test?served=false", upstreamHost), nil)
+	req = req.WithContext(context.WithValue(req.Context(), server.ReqContextKey, reqCtx))
+
 	resultURL, resultReq, err = self.HandleRequest(req.URL, req)
 	require.Nil(t, err)
-	require.Equal(t, upstreamPath, resultURL.String())
+	require.Equal(t, "http://upstream.org:443/test?served=false", resultURL.String())
 	require.NotNil(t, resultReq)
-
-	requestContext, ok = resultReq.Context().Value(reqContextKey).(*GitRequestContext)
-	require.True(t, ok)
-	require.Equal(t, upstreamPath, requestContext.upstream.String())
 }
 
 func TestGitCacheLaunchTask(t *testing.T) {
@@ -328,13 +324,14 @@ func TestGitCacheLaunchTask(t *testing.T) {
 		req       *http.Request
 		resultURL *url.URL
 		resultReq *http.Request
-
-		requestContext *GitRequestContext
 	)
 
+	reqCtx := server.RequestContext{}
 	testPath := "project/repo"
 
 	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/%s/test?served=false&task=true", host, testPath), nil)
+	req = req.WithContext(context.WithValue(req.Context(), server.ReqContextKey, reqCtx))
+
 	repoContext := getRepoContext(&url.URL{
 		Host: req.Host,
 		Path: testPath,
@@ -348,10 +345,6 @@ func TestGitCacheLaunchTask(t *testing.T) {
 	require.Nil(t, err)
 	require.Nil(t, resultURL)
 	require.NotNil(t, resultReq)
-
-	requestContext, ok = resultReq.Context().Value(reqContextKey).(*GitRequestContext)
-	require.True(t, ok)
-	require.Nil(t, requestContext.upstream)
 
 	taskIface, ok := repoContext.ext["task"]
 	require.True(t, ok)
@@ -373,13 +366,14 @@ func TestGitCacheReLaunchBusyTask(t *testing.T) {
 		req       *http.Request
 		resultURL *url.URL
 		resultReq *http.Request
-
-		requestContext *GitRequestContext
 	)
 
+	reqCtx := server.RequestContext{}
 	testPath := "project/repo2"
 
 	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/%s/test?served=false&task=true&updated=10s", host, testPath), nil)
+	req = req.WithContext(context.WithValue(req.Context(), server.ReqContextKey, reqCtx))
+
 	repoContext := getRepoContext(&url.URL{
 		Host: req.Host,
 		Path: testPath,
@@ -396,10 +390,6 @@ func TestGitCacheReLaunchBusyTask(t *testing.T) {
 	require.Nil(t, err)
 	require.Nil(t, resultURL)
 	require.NotNil(t, resultReq)
-
-	requestContext, ok = resultReq.Context().Value(reqContextKey).(*GitRequestContext)
-	require.True(t, ok)
-	require.Nil(t, requestContext.upstream)
 
 	time.Sleep(500 * time.Millisecond)
 

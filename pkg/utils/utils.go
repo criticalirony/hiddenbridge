@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"reflect"
 	"runtime"
 	"strings"
 
@@ -273,4 +274,35 @@ func GetLocalIPs() map[string]struct{} {
 	}
 
 	return result
+}
+
+func As(src interface{}, target interface{}) bool {
+	if target == nil {
+		log.Panic().Msg("as: target cannot be nil")
+	}
+
+	val := reflect.ValueOf(target)
+	typ := val.Type()
+	if typ.Kind() != reflect.Ptr || val.IsNil() {
+		panic("as: target must be a non-nil pointer")
+	}
+
+	if src == nil {
+		val.Elem().Set(reflect.Zero(val.Elem().Type()))
+		return true
+	}
+
+	srcVal := reflect.ValueOf(src)
+	targetType := typ.Elem()
+
+	if reflect.TypeOf(src).AssignableTo(targetType) {
+		val.Elem().Set(srcVal)
+		return true
+	}
+
+	if x, ok := src.(interface{ As(interface{}) bool }); ok && x.As(target) {
+		return true
+	}
+
+	return false
 }

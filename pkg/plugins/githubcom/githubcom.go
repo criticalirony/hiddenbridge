@@ -3,6 +3,7 @@ package githubcom
 import (
 	"fmt"
 	"hiddenbridge/pkg/plugins"
+	"hiddenbridge/pkg/server"
 	"hiddenbridge/pkg/utils"
 	"io"
 	"net/http"
@@ -11,10 +12,6 @@ import (
 
 	"github.com/rs/zerolog/log"
 	"golang.org/x/xerrors"
-)
-
-const (
-	HB_GIT_UPSTREAM_HEADER_FIELD = "hb-git-upstream"
 )
 
 type GithubHandler struct {
@@ -66,11 +63,12 @@ func (p *GithubHandler) findRepoNameIdx(path string) (offset, length int) {
 func (p *GithubHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, *http.Request, error) {
 	log.Debug().Msgf("%s handling request: %s", p.Name(), reqURL.String())
 
+	reqCtx := req.Context().Value(server.ReqContextKey).(server.RequestContext)
+
 	cacheHost := p.Opts.Get("cache.host").String()
 	if len(cacheHost) > 0 {
 		// We have a caching host (plugin) so encode current request as a query param and pass onto the cacher
-		req.Header.Add(HB_GIT_UPSTREAM_HEADER_FIELD, reqURL.String())
-		reqURL.Host = p.Opts.Get("cache.host").String()
+		reqCtx["chained"] = p.Opts.Get("cache.host").String()
 	}
 
 	return reqURL, nil, nil

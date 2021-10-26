@@ -168,3 +168,33 @@ func TestNormalizeURLWithPaths(t *testing.T) {
 		require.Equal(t, expected_data[i], u.String(), "Test: %d Data: %s", i, data)
 	}
 }
+
+func TestAsSimple(t *testing.T) {
+
+	target := new(int)
+	value := 5
+
+	ok := As(&value, &target)
+	require.True(t, ok)
+	require.Equal(t, 5, *target)
+
+	ok = As(nil, &target)
+	require.True(t, ok)
+	require.Nil(t, target)
+
+	var target2 int
+	ok = As(10, &target2)
+	require.True(t, ok)
+	require.Equal(t, 10, target2)
+
+	var src interface{} = "hello there"
+	var target3 string
+	ok = As(src, &target3)
+	require.True(t, ok)
+	require.Equal(t, "hello there", target3)
+
+	var src2 interface{} = 45
+	var target4 string
+	ok = As(src2, &target4)
+	require.False(t, ok)
+}

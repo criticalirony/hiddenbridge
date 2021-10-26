@@ -34,9 +34,12 @@ do
         if version_lt ${BASH_REMATCH[1]} "1.15"; then
           continue
         fi
+        echo Building version: ${BASH_REMATCH[1]}
         ${GO_VERSION} build -o ./build_versions/hiddenbridge_${BASH_REMATCH[1]} ./cmd/hiddenbridge
+        echo hiddenbridge
         ${GO_VERSION} build -o ./build_versions/signcert_${BASH_REMATCH[1]} ./cmd/signcert
+        echo signcert
     fi
 done
 
-ls ${BUILD_DIR}
+# ls ${BUILD_DIR}

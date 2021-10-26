@@ -34,12 +34,6 @@ var (
 	ClosedChan chan struct{}
 )
 
-type contextKey int
-
-const (
-	pluginListKey contextKey = iota
-)
-
 type BridgeServer struct {
 	Name    string
 	Opts    *options.OptionValue
@@ -526,7 +520,7 @@ func (s *BridgeServer) GetCertificate(chi *tls.ClientHelloInfo) (*tls.Certificat
 }
 
 // ServeHTTP handles the request and returns the response to client
-func (s *BridgeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (s *BridgeServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	var (
 		plug         plugins.Plugin
 		origReqURL   url.URL
@@ -534,9 +528,9 @@ func (s *BridgeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		newReq       *http.Request
 	)
 
-	reqURL, err := utils.URLFromRequest(r)
+	reqURL, err := utils.URLFromRequest(req)
 	if err != nil {
-		http.Error(w, xerrors.Errorf("%s server failed to parse request url %s: %w", s.Name, r.Host, err).Error(), http.StatusInternalServerError)
+		http.Error(w, xerrors.Errorf("%s server failed to parse request url %s: %w", s.Name, req.Host, err).Error(), http.StatusInternalServerError)
 		return
 	}
 	origReqURL = *reqURL
@@ -556,28 +550,50 @@ func (s *BridgeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// * This server sees that the original host has already been handled and assumes its to be forwarded on upstream
 	hostsList := map[string]struct{}{}
 
+	reqCtx := RequestContext{}
+	req = req.WithContext(context.WithValue(req.Context(), ReqContextKey, reqCtx))
+
 	for {
-		plug = s.findPlugin(&curentReqURL)
+		// plugins can set this in the request context if they'd prefer to specify the next plugin in the chain
+		var chainedPlugin string
+		plug = nil
+
+		// Check if this is a chained plugin request
+		if utils.As(reqCtx["chained"], &chainedPlugin) && chainedPlugin != "" {
+			plug = s.findPlugin(&url.URL{
+				Host: chainedPlugin,
+			})
+
+			// Remove chained plugins from context to prevent cycles
+			delete(reqCtx, "chained")
+
+		}
+
+		// Check if this is a normal pluin request
+		if plug == nil {
+			plug = s.findPlugin(&curentReqURL)
+		}
+
 		if plug == nil {
 			// No plugin, we can assume we now have the final end point
 			break
 		}
 
 		hostsList[reqURL.Hostname()] = struct{}{}
-		reqURL, newReq, err = plug.HandleRequest(reqURL, r)
+		reqURL, newReq, err = plug.HandleRequest(reqURL, req)
 		if err != nil {
-			http.Error(w, xerrors.Errorf("%s server %s plugin failed to handle url %s: %w", s.Name, plug.Name(), r.Host, err).Error(), http.StatusInternalServerError)
+			http.Error(w, xerrors.Errorf("%s server %s plugin failed to handle url %s: %w", s.Name, plug.Name(), req.Host, err).Error(), http.StatusInternalServerError)
 			return
 		}
 
 		if newReq != nil {
-			r = newReq
+			req = newReq
 		}
 
 		pluginsList = append(pluginsList, plug)
 
 		if reqURL != nil {
-			r.Host = reqURL.Host
+			req.Host = reqURL.Host
 		}
 
 		if reqURL == nil || reqURL.Host == curentReqURL.Host {
@@ -633,7 +649,7 @@ func (s *BridgeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		tlsConfig := &tls.Config{}
-		if r.TLS != nil {
+		if req.TLS != nil {
 			tlsConfig.InsecureSkipVerify = true
 		}
 
@@ -653,23 +669,25 @@ func (s *BridgeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.reverseSiteProxies[reqURL.Host] = rsp
 		}
 
-		*r.URL = *reqURL  // Shallow copy
-		r.URL.Scheme = "" // Remove host and scheme, it breaks the way reverse proxy works
-		r.URL.Host = ""
-		r = r.WithContext(context.WithValue(r.Context(), pluginListKey, pluginsList))
+		reqCtx["pluginslist"] = pluginsList
+
+		*req.URL = *reqURL  // Shallow copy
+		req.URL.Scheme = "" // Remove host and scheme, it breaks the way reverse proxy works
+		req.URL.Host = ""
+
 		// req.RequestURI = utils.TargetFromURL(reqURL)
-		rsp.ServeHTTP(w, r)
+		rsp.ServeHTTP(w, req)
 		return
 	}
 
-	r = r.WithContext(context.WithValue(r.Context(), pluginListKey, pluginsList))
+	reqCtx["pluginslist"] = pluginsList
 	resp := &http.Response{
-		Request: r,
+		Request: req,
 		Body:    http.NoBody,
 	}
 
 	if err = s.ModifyResponse(resp); err != nil {
-		s.ErrorHandler(w, r, err)
+		s.ErrorHandler(w, req, err)
 		return
 	}
 
@@ -696,12 +714,22 @@ func (s *BridgeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *BridgeServer) ModifyResponse(resp *http.Response) error {
 	var (
 		err    error
+		ok     bool
 		reqURL *url.URL
+		reqCtx RequestContext
 	)
 
-	r := resp.Request
+	req := resp.Request
+	reqCtx, ok = req.Context().Value(ReqContextKey).(RequestContext)
+	if !ok {
+		return xerrors.Errorf("request context not available")
+	}
 
-	pluginsList := r.Context().Value(pluginListKey).([]plugins.Plugin)
+	var pluginsList []plugins.Plugin
+	if !utils.As(reqCtx["pluginslist"], pluginsList) || pluginsList == nil {
+		return xerrors.Errorf("plugins list not available")
+	}
+
 	if len(pluginsList) == 0 {
 		// No plugin, so nothing to do
 		return nil
@@ -721,7 +749,7 @@ func (s *BridgeServer) ModifyResponse(resp *http.Response) error {
 	for i := len(pluginsList) - 1; i >= 0; i-- {
 		plug := pluginsList[i]
 
-		if err = plug.HandleResponse(modResponseWriter, r, resp.Body, resp.StatusCode); err != nil {
+		if err = plug.HandleResponse(modResponseWriter, req, resp.Body, resp.StatusCode); err != nil {
 			return xerrors.Errorf("failed to handle response for request %s: %w", reqURL.String(), err)
 		}
 
@@ -744,11 +772,11 @@ func (s *BridgeServer) ModifyResponse(resp *http.Response) error {
 	return err
 }
 
-func (s *BridgeServer) ErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
-	reqURL, parseErr := utils.URLFromRequest(r)
+func (s *BridgeServer) ErrorHandler(w http.ResponseWriter, req *http.Request, err error) {
+	reqURL, parseErr := utils.URLFromRequest(req)
 
 	if parseErr != nil {
-		log.Error().Err(parseErr).Msgf("%s server failure to parse url from req %+v during response error handling", s.Name, r)
+		log.Error().Err(parseErr).Msgf("%s server failure to parse url from req %+v during response error handling", s.Name, req)
 		http.Error(w, xerrors.Errorf("%s server internal error during error handling of request and response processing: %w", s.Name, parseErr).Error(), http.StatusInternalServerError)
 		return
 	}
