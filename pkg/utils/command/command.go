@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+
+	"github.com/rs/zerolog/log"
 )
 
 // Exec 3rd party bins, heavily copied from:
@@ -70,6 +72,8 @@ func RunWithStdin(ctx context.Context, dir string, stdin io.Reader, envs *Envs, 
 	if envs != nil {
 		c.Env = append([]string{}, envs.StringList()...)
 	}
+
+	log.Debug().Msgf("cmd run: %s", c.String())
 
 	err := c.Run()
 	if err != nil {

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"hiddenbridge/pkg/options"
 	"hiddenbridge/pkg/plugins"
+	"hiddenbridge/pkg/server/request"
 	"hiddenbridge/pkg/utils"
 	"io"
 	"io/ioutil"
@@ -550,23 +551,24 @@ func (s *BridgeServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// * This server sees that the original host has already been handled and assumes its to be forwarded on upstream
 	hostsList := map[string]struct{}{}
 
-	reqCtx := RequestContext{}
-	req = req.WithContext(context.WithValue(req.Context(), ReqContextKey, reqCtx))
+	reqCtx := request.RequestContext{}
+	req = req.WithContext(context.WithValue(req.Context(), request.ReqContextKey, reqCtx))
+
+	// plugins can set this in the request context if they'd prefer to specify the next plugin in the chain
+	var pluginChain string
 
 	for {
-		// plugins can set this in the request context if they'd prefer to specify the next plugin in the chain
-		var chainedPlugin string
 		plug = nil
 
-		// Check if this is a chained plugin request
-		if utils.As(reqCtx["chained"], &chainedPlugin) && chainedPlugin != "" {
+		// Check if this is a plugin chain request
+		if pluginChain != "" {
 			plug = s.findPlugin(&url.URL{
-				Host: chainedPlugin,
+				Host: pluginChain,
 			})
 
-			// Remove chained plugins from context to prevent cycles
-			delete(reqCtx, "chained")
-
+			// Remove plugin chains from context to prevent cycles
+			delete(reqCtx, "chain")
+			pluginChain = ""
 		}
 
 		// Check if this is a normal pluin request
@@ -596,13 +598,18 @@ func (s *BridgeServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			req.Host = reqURL.Host
 		}
 
+		if utils.As(reqCtx["chain"], &pluginChain) && pluginChain != "" {
+			// The last plugin registered a chain plugin, so we need to do at least one more iteration
+			continue
+		}
+
 		if reqURL == nil || reqURL.Host == curentReqURL.Host {
 			// reqURL is now nil or host hasn't changed we are now ready to process the response
 			break
 		}
 
 		if _, ok := hostsList[reqURL.Hostname()]; ok {
-			// reqURL now has a host that has already been handled. We are not ready to process the response
+			// reqURL now has a host that has already been handled. We are now ready to process the response
 			break
 		}
 
@@ -615,6 +622,7 @@ func (s *BridgeServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	if reqURL != nil {
+		// Start looking for proxy - first find plugin that holds possilbe proxy URL
 		plug = s.findPlugin(&curentReqURL)
 		if plug == nil {
 			// No plugin, we can assume we now have the final end point
@@ -622,13 +630,17 @@ func (s *BridgeServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 
+		// Ask plugin if this URL needs to be proxied
 		proxyURL, err := plug.ProxyURL(reqURL)
 		if err != nil {
 			http.Error(w, xerrors.Errorf("%s server %s plugin failed to check proxy url %s: %w", s.Name, plug.Name(), reqURL.String(), err).Error(), http.StatusInternalServerError)
 			return
 		}
 
+		// A proxy URL is not needed, but the request host hasn't changed... this might be a cycle
+		// its not a cycle if this server resolves the host differently to the requesting client
 		if proxyURL == nil && (origReqURL.Host == reqURL.Host) {
+			// Resolve host to an IP
 			addrs, err := net.LookupHost(origReqURL.Hostname())
 			if err != nil {
 				err = xerrors.Errorf("internal hostname resolutuion failure")
@@ -637,6 +649,7 @@ func (s *BridgeServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				return
 			}
 
+			// Check IP to see if its any we're hosting
 			for _, addr := range addrs {
 				if _, ok := s.localIPs[addr]; ok {
 					// We really do seem to have a recursive request
@@ -669,6 +682,7 @@ func (s *BridgeServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			s.reverseSiteProxies[reqURL.Host] = rsp
 		}
 
+		// Save the visitied plugins in the request context so it can be used by the response handlers
 		reqCtx["pluginslist"] = pluginsList
 
 		*req.URL = *reqURL  // Shallow copy
@@ -680,12 +694,14 @@ func (s *BridgeServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Save the visitied plugins in the request context so it can be used by the response handlers
 	reqCtx["pluginslist"] = pluginsList
 	resp := &http.Response{
 		Request: req,
 		Body:    http.NoBody,
 	}
 
+	// Call response handlers to allow customization of responses
 	if err = s.ModifyResponse(resp); err != nil {
 		s.ErrorHandler(w, req, err)
 		return
@@ -716,17 +732,17 @@ func (s *BridgeServer) ModifyResponse(resp *http.Response) error {
 		err    error
 		ok     bool
 		reqURL *url.URL
-		reqCtx RequestContext
+		reqCtx request.RequestContext
 	)
 
 	req := resp.Request
-	reqCtx, ok = req.Context().Value(ReqContextKey).(RequestContext)
+	reqCtx, ok = req.Context().Value(request.ReqContextKey).(request.RequestContext)
 	if !ok {
 		return xerrors.Errorf("request context not available")
 	}
 
 	var pluginsList []plugins.Plugin
-	if !utils.As(reqCtx["pluginslist"], pluginsList) || pluginsList == nil {
+	if !utils.As(reqCtx["pluginslist"], &pluginsList) || pluginsList == nil {
 		return xerrors.Errorf("plugins list not available")
 	}
 
@@ -735,26 +751,24 @@ func (s *BridgeServer) ModifyResponse(resp *http.Response) error {
 		return nil
 	}
 
-	// tmpBuf := &bytes.Buffer{}
 	rrc := utils.NewReReadCloser(resp.Body)
-	// resp.Body = utils.TeeCloser(rrc, tmpBuf)
 	resp.Body = rrc
-
-	// respBody, _ := ioutil.ReadAll(resp.Body)
-	// log.Debug().Msgf("body: %v", string(respBody))
-	// resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
 	modResponseWriter := NewResponseModifier(resp)
 
+	// Iterate the visited plugins in reverse order.. i.e. handle responses in the opposite direction than the requests
+	// Requests are processed in FIFO, responses are processed in LIFO
 	for i := len(pluginsList) - 1; i >= 0; i-- {
 		plug := pluginsList[i]
 
-		if err = plug.HandleResponse(modResponseWriter, req, resp.Body, resp.StatusCode); err != nil {
+		if err = plug.HandleResponse(modResponseWriter, req, reqCtx, resp.Body, resp.StatusCode); err != nil {
 			return xerrors.Errorf("failed to handle response for request %s: %w", reqURL.String(), err)
 		}
 
+		// Reset the response body, ready for the next plugin
 		resp.Body.(utils.ReReadCloser).Reset()
 
+		// Once a plugin has written a body to the response, its not safe for any other plugin to further modify the response
 		if modResponseWriter.Written() > 0 {
 			// The response writer has been written to, so other plugins can no longer modify the response
 			break

@@ -3,6 +3,7 @@ package goproxy
 import (
 	"hiddenbridge/pkg/options"
 	"hiddenbridge/pkg/plugins"
+	"hiddenbridge/pkg/server/request"
 	"hiddenbridge/pkg/utils"
 	"io"
 	"net/http"
@@ -41,7 +42,7 @@ func (p *GoProxyHandler) Init(opts *options.OptionValue) error {
 	return nil
 }
 
-func (p *GoProxyHandler) HandleResponse(w http.ResponseWriter, r *http.Request, body io.Reader, statusCode int) error {
-	p.router.ServeHTTP(w, r)
+func (p *GoProxyHandler) HandleResponse(w http.ResponseWriter, req *http.Request, reqCtx request.RequestContext, body io.Reader, statusCode int) error {
+	p.router.ServeHTTP(w, req)
 	return nil // by default plugins will not change the response
 }

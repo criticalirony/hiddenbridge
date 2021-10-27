@@ -100,7 +100,7 @@ func Run(proxy, workingdir string, timeout time.Duration, args ...interface{}) (
 }
 
 func Clone(repoURI, repoDir string, isBare, isMirror bool, proxy string, timeout time.Duration) error {
-	args := []interface{}{"clone", "-v"}
+	args := []string{"clone", "-v"}
 
 	if isMirror {
 		args = append(args, "--mirror") // mirror implies bare

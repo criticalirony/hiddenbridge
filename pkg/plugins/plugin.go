@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"hiddenbridge/pkg/options"
+	"hiddenbridge/pkg/server/request"
 	"io"
 	"net/http"
 	"net/url"
@@ -28,7 +29,7 @@ type Plugin interface {
 	ProxyURL(hostURL *url.URL) (*url.URL, error)
 	HandleCertificate(site string) (*tls.Certificate, error)
 	HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, *http.Request, error)
-	HandleResponse(w http.ResponseWriter, r *http.Request, body io.Reader, statusCode int) error
+	HandleResponse(w http.ResponseWriter, req *http.Request, reqCtx request.RequestContext, body io.Reader, statusCode int) error
 }
 
 func init() {
@@ -39,6 +40,7 @@ func init() {
 type BasePlugin struct {
 	Name_ string
 	Opts  *options.OptionValue
+	Hosts map[string]struct{}
 	Certs map[string]*tls.Certificate
 }
 
@@ -50,12 +52,22 @@ func (p *BasePlugin) Init(opts *options.OptionValue) error {
 	p.Opts = opts
 
 	// Expected config if a plugin wants to host its own certificate
-	certFiles := p.Opts.GetDefault("site.certs", nil).List()
-	keyFiles := p.Opts.GetDefault("site.keys", nil).List()
-	hosts := p.Opts.Get("hosts").List()
+	certFiles := p.Opts.GetDefault("site.certs", nil).StringList()
+	keyFiles := p.Opts.GetDefault("site.keys", nil).StringList()
+	hosts := p.Opts.Get("hosts").StringList()
 
 	if len(hosts) == 0 {
 		return xerrors.Errorf("no configured hosts for plugin")
+	}
+
+	if p.Hosts == nil {
+		p.Hosts = map[string]struct{}{}
+	}
+
+	// Record the set of hosts that this plugin responds to.
+	// This is used because it is possible that we will be called in a chain and will be given another host in the req
+	for _, host := range p.Opts.GetDefault("hosts", nil).StringList() {
+		p.Hosts[host] = struct{}{}
 	}
 
 	if len(certFiles) != len(keyFiles) {
@@ -72,11 +84,11 @@ func (p *BasePlugin) Init(opts *options.OptionValue) error {
 		// log.Debug().Msgf("Cert file: %s", certFile.String())
 		// log.Debug().Msgf("Key file: %s", keyFiles[i].String())
 
-		cert, err := tls.LoadX509KeyPair(certFile.String(), keyFiles[i].String())
+		cert, err := tls.LoadX509KeyPair(certFile, keyFiles[i])
 		if err != nil {
 			return xerrors.Errorf("failed to load X509 key pair cert '%s' key '%s': %w", certFiles, keyFiles, err)
 		}
-		p.Certs[hosts[i].String()] = &cert
+		p.Certs[hosts[i]] = &cert
 	}
 
 	return nil

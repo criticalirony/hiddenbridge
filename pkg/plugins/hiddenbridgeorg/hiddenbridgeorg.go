@@ -3,6 +3,7 @@ package hiddenbridgeorg
 import (
 	"hiddenbridge/pkg/options"
 	"hiddenbridge/pkg/plugins"
+	"hiddenbridge/pkg/server/request"
 	"hiddenbridge/pkg/utils"
 	"io"
 	"io/ioutil"
@@ -72,9 +73,9 @@ func (p *HiddenBridgeHandler) HandleCertsReq(rw http.ResponseWriter, r *http.Req
 	rw.Write(p.cert)
 }
 
-func (p *HiddenBridgeHandler) HandleResponse(w http.ResponseWriter, r *http.Request, body io.Reader, statusCode int) error {
+func (p *HiddenBridgeHandler) HandleResponse(w http.ResponseWriter, req *http.Request, reqCtx request.RequestContext, body io.Reader, statusCode int) error {
 
-	p.router.ServeHTTP(w, r)
+	p.router.ServeHTTP(w, req)
 
 	return nil // by default plugins will not change the response
 }

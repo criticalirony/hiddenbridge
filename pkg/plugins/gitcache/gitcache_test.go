@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"hiddenbridge/pkg/options"
 	"hiddenbridge/pkg/plugins"
-	"hiddenbridge/pkg/server"
+	"hiddenbridge/pkg/server/request"
 	"hiddenbridge/pkg/utils"
 	"hiddenbridge/pkg/utils/command"
 	"io/ioutil"
@@ -62,7 +62,7 @@ func testRoute(w http.ResponseWriter, req *http.Request) {
 	var (
 		err    error
 		ok     bool
-		reqCtx server.RequestContext
+		reqCtx request.RequestContext
 	)
 
 	urlQuery := req.URL.Query()
@@ -70,7 +70,7 @@ func testRoute(w http.ResponseWriter, req *http.Request) {
 	isServedLocal := urlQuery.Get("served")        // Should this route serve request locally regardless of upstream
 	checkLastUpdatedRaw := urlQuery.Get("updated") // Should we consider when the repo was last updated before running a new task
 
-	if reqCtx, ok = req.Context().Value(server.ReqContextKey).(server.RequestContext); !ok {
+	if reqCtx, ok = req.Context().Value(request.ReqContextKey).(request.RequestContext); !ok {
 		log.Panic().Msgf("unable to retrieve git cache context for this request: %s", req.URL.String())
 	}
 
@@ -154,8 +154,8 @@ func TestGitCacheSimple(t *testing.T) {
 	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/sample/project.git/info/refs?service=git-upload-pack", host), nil)
 	resp = httptest.NewRecorder()
 
-	reqCtx := server.RequestContext{}
-	req = req.WithContext(context.WithValue(req.Context(), server.ReqContextKey, reqCtx))
+	reqCtx := request.RequestContext{}
+	req = req.WithContext(context.WithValue(req.Context(), request.ReqContextKey, reqCtx))
 
 	_, req, err = self.HandleRequest(req.URL, req)
 	require.Nil(t, err)
@@ -179,7 +179,7 @@ func TestGitCacheSimple(t *testing.T) {
 	os.WriteFile(filepath.Join(localRepoDir, localFilePath), []byte(input), os.ModePerm)
 	defer os.RemoveAll(localRepoDir) // Best effort
 
-	err = self.HandleResponse(resp, req, nil, http.StatusOK)
+	err = self.HandleResponse(resp, req, reqCtx, nil, http.StatusOK)
 	require.Nil(t, err)
 
 	res := resp.Result()
@@ -204,8 +204,8 @@ func TestGitCacheMethodHead(t *testing.T) {
 	req = httptest.NewRequest(http.MethodHead, fmt.Sprintf("http://%s/sample/project.git/info/refs?service=git-upload-pack", host), nil)
 	resp = httptest.NewRecorder()
 
-	reqCtx := server.RequestContext{}
-	req = req.WithContext(context.WithValue(req.Context(), server.ReqContextKey, reqCtx))
+	reqCtx := request.RequestContext{}
+	req = req.WithContext(context.WithValue(req.Context(), request.ReqContextKey, reqCtx))
 
 	_, req, err = self.HandleRequest(req.URL, req)
 	require.Nil(t, err)
@@ -229,7 +229,7 @@ func TestGitCacheMethodHead(t *testing.T) {
 	os.WriteFile(filepath.Join(localRepoDir, localFilePath), []byte(input), os.ModePerm)
 	defer os.RemoveAll(localRepoDir) // Best effort
 
-	err = self.HandleResponse(resp, req, nil, http.StatusOK)
+	err = self.HandleResponse(resp, req, reqCtx, nil, http.StatusOK)
 	require.Nil(t, err)
 
 	res := resp.Result()
@@ -260,11 +260,11 @@ func TestGitCacheHandleRequest(t *testing.T) {
 	upstreamURL, err := utils.NormalizeURL(upstreamRaw)
 	require.Nil(t, err)
 
-	reqCtx := server.RequestContext{}
+	reqCtx := request.RequestContext{}
 
 	// Test 1.
 	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/local/path/not/found", host), nil)
-	req = req.WithContext(context.WithValue(req.Context(), server.ReqContextKey, reqCtx))
+	req = req.WithContext(context.WithValue(req.Context(), request.ReqContextKey, reqCtx))
 
 	resultURL, resultReq, err = self.HandleRequest(req.URL, req)
 	require.Nil(t, err)
@@ -273,7 +273,7 @@ func TestGitCacheHandleRequest(t *testing.T) {
 
 	// Test 2.
 	req = httptest.NewRequest(http.MethodGet, upstreamRaw, nil)
-	req = req.WithContext(context.WithValue(req.Context(), server.ReqContextKey, reqCtx))
+	req = req.WithContext(context.WithValue(req.Context(), request.ReqContextKey, reqCtx))
 
 	resultURL, resultReq, err = self.HandleRequest(req.URL, req)
 	require.Nil(t, err)
@@ -282,7 +282,7 @@ func TestGitCacheHandleRequest(t *testing.T) {
 
 	// Test 3.
 	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/test?served=true", host), nil)
-	req = req.WithContext(context.WithValue(req.Context(), server.ReqContextKey, reqCtx))
+	req = req.WithContext(context.WithValue(req.Context(), request.ReqContextKey, reqCtx))
 
 	resultURL, resultReq, err = self.HandleRequest(req.URL, req)
 	require.Nil(t, err)
@@ -291,7 +291,7 @@ func TestGitCacheHandleRequest(t *testing.T) {
 
 	// Test 4.
 	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/test?served=true", upstreamHost), nil)
-	req = req.WithContext(context.WithValue(req.Context(), server.ReqContextKey, reqCtx))
+	req = req.WithContext(context.WithValue(req.Context(), request.ReqContextKey, reqCtx))
 
 	resultURL, resultReq, err = self.HandleRequest(req.URL, req)
 	require.Nil(t, err)
@@ -300,7 +300,7 @@ func TestGitCacheHandleRequest(t *testing.T) {
 
 	// Test 5.
 	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/test?served=false", host), nil)
-	req = req.WithContext(context.WithValue(req.Context(), server.ReqContextKey, reqCtx))
+	req = req.WithContext(context.WithValue(req.Context(), request.ReqContextKey, reqCtx))
 
 	resultURL, resultReq, err = self.HandleRequest(req.URL, req)
 	require.Nil(t, err)
@@ -309,7 +309,7 @@ func TestGitCacheHandleRequest(t *testing.T) {
 
 	// Test 6.
 	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/test?served=false", upstreamHost), nil)
-	req = req.WithContext(context.WithValue(req.Context(), server.ReqContextKey, reqCtx))
+	req = req.WithContext(context.WithValue(req.Context(), request.ReqContextKey, reqCtx))
 
 	resultURL, resultReq, err = self.HandleRequest(req.URL, req)
 	require.Nil(t, err)
@@ -326,11 +326,11 @@ func TestGitCacheLaunchTask(t *testing.T) {
 		resultReq *http.Request
 	)
 
-	reqCtx := server.RequestContext{}
+	reqCtx := request.RequestContext{}
 	testPath := "project/repo"
 
 	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/%s/test?served=false&task=true", host, testPath), nil)
-	req = req.WithContext(context.WithValue(req.Context(), server.ReqContextKey, reqCtx))
+	req = req.WithContext(context.WithValue(req.Context(), request.ReqContextKey, reqCtx))
 
 	repoContext := getRepoContext(&url.URL{
 		Host: req.Host,
@@ -368,11 +368,11 @@ func TestGitCacheReLaunchBusyTask(t *testing.T) {
 		resultReq *http.Request
 	)
 
-	reqCtx := server.RequestContext{}
+	reqCtx := request.RequestContext{}
 	testPath := "project/repo2"
 
 	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/%s/test?served=false&task=true&updated=10s", host, testPath), nil)
-	req = req.WithContext(context.WithValue(req.Context(), server.ReqContextKey, reqCtx))
+	req = req.WithContext(context.WithValue(req.Context(), request.ReqContextKey, reqCtx))
 
 	repoContext := getRepoContext(&url.URL{
 		Host: req.Host,

@@ -2,13 +2,13 @@ package githubcom
 
 import (
 	"fmt"
+	"hiddenbridge/pkg/options"
 	"hiddenbridge/pkg/plugins"
-	"hiddenbridge/pkg/server"
+	"hiddenbridge/pkg/server/request"
 	"hiddenbridge/pkg/utils"
 	"io"
 	"net/http"
 	"net/url"
-	"strings"
 
 	"github.com/rs/zerolog/log"
 	"golang.org/x/xerrors"
@@ -16,6 +16,8 @@ import (
 
 type GithubHandler struct {
 	plugins.BasePlugin
+
+	cacheHost string
 }
 
 func init() {
@@ -31,50 +33,33 @@ func init() {
 	}
 }
 
-func (p *GithubHandler) RemoteURL(hostURL *url.URL) (*url.URL, error) {
-	return nil, nil // We need this connection to be proxied
+func (p *GithubHandler) Init(opts *options.OptionValue) error {
+	if err := p.BasePlugin.Init(opts); err != nil {
+		return err
+	}
+
+	p.cacheHost = opts.Get("cache.host").String()
+
+	return nil
 }
 
-func (p *GithubHandler) findRepoNameIdx(path string) (offset, length int) {
-	// var serviceIdx int
-	repoPaths := []string{"info", "HEAD", "refs", "packed-refs", "objects", "branches", "hooks", "config", "description"}
-
-	pathParts := strings.Split(path, "/")
-	if len(pathParts) > 0 && pathParts[0] == "" {
-		pathParts = pathParts[1:]
-	}
-
-	for i, pathPart := range pathParts {
-		for _, repoPath := range repoPaths {
-			if pathPart == repoPath {
-				if i > 0 {
-					repoName := pathParts[i-1]
-					return strings.Index(path, repoName), len(repoName)
-				}
-
-				return -1, 0
-			}
-		}
-	}
-
-	return -1, 0
+func (p *GithubHandler) RemoteURL(hostURL *url.URL) (*url.URL, error) {
+	return nil, nil // We need this connection to be proxied
 }
 
 func (p *GithubHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, *http.Request, error) {
 	log.Debug().Msgf("%s handling request: %s", p.Name(), reqURL.String())
 
-	reqCtx := req.Context().Value(server.ReqContextKey).(server.RequestContext)
-
-	cacheHost := p.Opts.Get("cache.host").String()
-	if len(cacheHost) > 0 {
+	reqCtx := req.Context().Value(request.ReqContextKey).(request.RequestContext)
+	if len(p.cacheHost) > 0 {
 		// We have a caching host (plugin) so encode current request as a query param and pass onto the cacher
-		reqCtx["chained"] = p.Opts.Get("cache.host").String()
+		reqCtx["chain"] = p.cacheHost
 	}
 
 	return reqURL, nil, nil
 }
 
-func (p *GithubHandler) HandleResponse(w http.ResponseWriter, req *http.Request, body io.Reader, statusCode int) error {
+func (p *GithubHandler) HandleResponse(w http.ResponseWriter, req *http.Request, reqCtx request.RequestContext, body io.Reader, statusCode int) error {
 	log.Debug().Msgf("%s handling response: req: %s", p.Name(), req.URL.String())
 
 	if statusCode >= http.StatusMovedPermanently && statusCode < http.StatusBadRequest {

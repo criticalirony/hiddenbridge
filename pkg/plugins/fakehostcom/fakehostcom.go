@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"hiddenbridge/pkg/options"
 	"hiddenbridge/pkg/plugins"
+	"hiddenbridge/pkg/server/request"
 	"hiddenbridge/pkg/utils"
 	"io"
 	"io/ioutil"
@@ -81,14 +82,14 @@ func (p *FakeHostHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*ur
 	return directURL, nil, err
 }
 
-func (p *FakeHostHandler) HandleResponse(w http.ResponseWriter, r *http.Request, body io.Reader, statusCode int) error {
+func (p *FakeHostHandler) HandleResponse(w http.ResponseWriter, req *http.Request, reqCtx request.RequestContext, body io.Reader, statusCode int) error {
 	// Test to check that we can change the body of a response
 	var bodyBytes []byte
 	var err error
 
-	reqURL, err := utils.NormalizeURL(r.URL.String())
+	reqURL, err := utils.NormalizeURL(req.URL.String())
 	if err != nil {
-		return xerrors.Errorf("failed to normailze request url %s", r.URL.String())
+		return xerrors.Errorf("failed to normailze request url %s", req.URL.String())
 	}
 
 	if bodyBytes, err = ioutil.ReadAll(body); err != nil {

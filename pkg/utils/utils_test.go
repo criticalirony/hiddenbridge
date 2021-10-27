@@ -4,8 +4,19 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func requirePanic(t *testing.T, f func()) {
+	defer func() {
+		if recover() == nil {
+			assert.Fail(t, "The code did not panic")
+			t.FailNow()
+		}
+	}()
+	f()
+}
 
 func TestNormalizeURL(t *testing.T) {
 	var input_data = []string{
@@ -193,8 +204,10 @@ func TestAsSimple(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "hello there", target3)
 
-	var src2 interface{} = 45
-	var target4 string
-	ok = As(src2, &target4)
-	require.False(t, ok)
+	requirePanic(t, func() {
+		var src2 interface{} = 45
+		var target4 string
+
+		As(src2, &target4)
+	})
 }

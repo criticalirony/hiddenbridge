@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hiddenbridge/pkg/options"
 	"hiddenbridge/pkg/plugins"
+	"hiddenbridge/pkg/server/request"
 	"hiddenbridge/pkg/utils"
 	"io"
 	"net/http"
@@ -74,11 +75,11 @@ func (p *FakeRedirectHostHandler) HandleRequest(reqURL *url.URL, req *http.Reque
 	return &nextURL, nil, nil
 }
 
-func (p *FakeRedirectHostHandler) HandleResponse(w http.ResponseWriter, r *http.Request, body io.Reader, statusCode int) error {
+func (p *FakeRedirectHostHandler) HandleResponse(w http.ResponseWriter, req *http.Request, reqCtx request.RequestContext, body io.Reader, statusCode int) error {
 	respBody := "<HTML><HEAD><TITLE>Custom response</TITLE></HEAD><BODY>This here be a custom response!</BODY></HTML>\r\n"
 
 	if _, err := io.WriteString(w, respBody); err != nil {
-		return xerrors.Errorf("failed to write response body for req %s: %w", r.URL.String(), err)
+		return xerrors.Errorf("failed to write response body for req %s: %w", req.URL.String(), err)
 	}
 	return nil
 }

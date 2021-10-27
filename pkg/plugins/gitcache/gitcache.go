@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"hiddenbridge/pkg/options"
 	"hiddenbridge/pkg/plugins"
-	"hiddenbridge/pkg/server"
+	"hiddenbridge/pkg/server/request"
 	"hiddenbridge/pkg/utils"
 	"io"
 	"net/http"
@@ -21,7 +21,6 @@ type GitCacheHandler struct {
 	cachePath    string
 	forwardProxy string
 	r            *mux.Router
-	hosts        map[string]struct{}
 }
 
 func init() {
@@ -31,9 +30,7 @@ func init() {
 	}
 
 	plugins.PluginBuilder[pluginName] = func() plugins.Plugin {
-		h := GitCacheHandler{
-			hosts: map[string]struct{}{},
-		}
+		h := GitCacheHandler{}
 		h.Name_ = pluginName
 		return &h
 	}
@@ -62,12 +59,6 @@ func (p *GitCacheHandler) Init(opts *options.OptionValue) error {
 
 	p.forwardProxy = p.Opts.GetDefault("forward.proxy", "").String()
 
-	// Record the set of hosts that this plugin responds to.
-	// This is used because it is possible that we will be called in a chain and will be given another host in the req
-	for _, host := range p.Opts.GetDefault("hosts", nil).StringList() {
-		p.hosts[host] = struct{}{}
-	}
-
 	return nil
 }
 
@@ -82,14 +73,23 @@ func (p *GitCacheHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*ur
 	var match mux.RouteMatch
 	var hasRoute bool = p.r.Match(req, &match)
 
-	reqCtx := req.Context().Value(server.ReqContextKey).(server.RequestContext)
+	reqCtx := req.Context().Value(request.ReqContextKey).(request.RequestContext)
 
 	// Pass context data between this request handler and our respective response handler
 	reqCtx["reporoot"] = p.cachePath
 	reqCtx["gitproxy"] = p.forwardProxy
-	reqCtx["upstream"] = reqURL
+
+	if !hasRoute {
+		log.Error().Err(match.MatchErr).Msg("router: failed to match")
+	}
 
 	if hasRoute {
+		if _, ok := p.Hosts[reqURL.Hostname()]; !ok {
+			// If the request URL is not one of our registered hostnames; then this is an upstream URL and
+			// we are a chain/middleware plugin
+			reqCtx["upstream"] = reqURL
+		}
+
 		req = mux.SetURLVars(req, match.Vars)
 		match.Handler.ServeHTTP(nil, req) // Handle the request, but you can't send anything as a response, ResponseHandler will do that
 
@@ -105,7 +105,7 @@ func (p *GitCacheHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*ur
 	}
 
 	if !utils.URLIsEmpty(reqURL) {
-		if _, ok := p.hosts[reqURL.Hostname()]; ok {
+		if _, ok := p.Hosts[reqURL.Hostname()]; ok {
 			reqURL = nil // This is a local request so we do not need to send the request further upstream
 		}
 	}
@@ -114,7 +114,7 @@ func (p *GitCacheHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*ur
 
 }
 
-func (p *GitCacheHandler) HandleResponse(w http.ResponseWriter, req *http.Request, body io.Reader, statusCode int) error {
+func (p *GitCacheHandler) HandleResponse(w http.ResponseWriter, req *http.Request, reqCtx request.RequestContext, body io.Reader, statusCode int) error {
 	log.Debug().Msgf("%s handling response: req: %s", p.Name(), req.URL.String())
 
 	// Find a matching route for our request
@@ -122,15 +122,9 @@ func (p *GitCacheHandler) HandleResponse(w http.ResponseWriter, req *http.Reques
 	var hasRoute bool = p.r.Match(req, &match)
 
 	if hasRoute {
-		var (
-			reqCtx server.RequestContext
-			ok     bool
-		)
 
-		if reqCtx, ok = req.Context().Value(server.ReqContextKey).(server.RequestContext); !ok {
-			http.Error(w, fmt.Sprintf("unable to retrieve git cache context for this request: %s", req.URL.String()), http.StatusInternalServerError)
-			return xerrors.Errorf("unable to retrieve git cache context for this request: %s", req.URL.String())
-		}
+		reqCtx["body"] = body
+		reqCtx["statuscode"] = statusCode
 
 		match.Handler.ServeHTTP(w, req) // Handle the response
 		var err error

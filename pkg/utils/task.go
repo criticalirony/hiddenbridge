@@ -2,6 +2,8 @@ package utils
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -13,6 +15,7 @@ import (
 var (
 	ErrTaskBusy       = errors.New("task busy")
 	ErrTaskNotExpired = errors.New("task not expired")
+	ErrNoFunction     = errors.New("no function")
 )
 
 type ErrExpiry struct {
@@ -66,6 +69,12 @@ func NewTask(name string, fn func(ctx interface{}) error, cb func(task *Task, ru
 		fnDoneCB: cb,
 	}
 
+	if name == "" {
+		b := make([]byte, 8)
+		rand.Read(b) // Best effort
+		t.Name = hex.EncodeToString(b)
+	}
+
 	if t.fnDoneCB == nil {
 		t.fnDoneCB = TaskDefaultDoneCB
 	}
@@ -85,12 +94,21 @@ func (t *Task) Run(ctx interface{}) error {
 	go func() {
 		defer close(t.completed)
 		close(started)
+
+		started := time.Now()
+		log.Debug().Msgf("tasK: %s started: %s", t.Name, started)
 		if t.fn != nil {
 			t.Err = t.fn(t.RunCtx)
+		} else {
+			t.Err = ErrNoFunction
 		}
 		if t.fnDoneCB != nil {
 			t.fnDoneCB(t, t.RunCtx, t.Err)
+		} else if t.Err != nil {
+			log.Error().Err(t.Err).Msgf("run task: %s failure", t.Name)
 		}
+
+		log.Debug().Msgf("tasK: %s completed: %s dur: %s", t.Name, time.Now(), time.Since(started))
 	}()
 
 	<-started

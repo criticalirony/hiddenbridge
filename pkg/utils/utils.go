@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
 	"golang.org/x/xerrors"
@@ -302,6 +303,13 @@ func As(src interface{}, target interface{}) bool {
 
 	if x, ok := src.(interface{ As(interface{}) bool }); ok && x.As(target) {
 		return true
+	}
+
+	if log.Logger.GetLevel() <= zerolog.DebugLevel {
+		// Usually we want to know about this error, but in production, maybe only a log message
+		log.Panic().Msgf("failure to assign src type: %T to target type: %s", src, reflect.Indirect(val).Kind())
+	} else {
+		log.Error().Msgf("failure to assign src type: %T to target type: %s", src, reflect.Indirect(val).Kind())
 	}
 
 	return false
