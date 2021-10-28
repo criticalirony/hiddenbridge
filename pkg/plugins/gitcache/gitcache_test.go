@@ -157,7 +157,7 @@ func TestGitCacheSimple(t *testing.T) {
 	reqCtx := request.RequestContext{}
 	req = req.WithContext(context.WithValue(req.Context(), request.ReqContextKey, reqCtx))
 
-	_, req, err = self.HandleRequest(req.URL, req)
+	_, err = self.HandleRequest(req.URL, &req)
 	require.Nil(t, err)
 	require.NotNil(t, req)
 
@@ -207,7 +207,7 @@ func TestGitCacheMethodHead(t *testing.T) {
 	reqCtx := request.RequestContext{}
 	req = req.WithContext(context.WithValue(req.Context(), request.ReqContextKey, reqCtx))
 
-	_, req, err = self.HandleRequest(req.URL, req)
+	_, err = self.HandleRequest(req.URL, &req)
 	require.Nil(t, err)
 	require.NotNil(t, req)
 
@@ -244,7 +244,6 @@ func TestGitCacheHandleRequest(t *testing.T) {
 		err       error
 		req       *http.Request
 		resultURL *url.URL
-		resultReq *http.Request
 	)
 
 	// Test cases
@@ -266,55 +265,49 @@ func TestGitCacheHandleRequest(t *testing.T) {
 	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/local/path/not/found", host), nil)
 	req = req.WithContext(context.WithValue(req.Context(), request.ReqContextKey, reqCtx))
 
-	resultURL, resultReq, err = self.HandleRequest(req.URL, req)
+	resultURL, err = self.HandleRequest(req.URL, &req)
 	require.Nil(t, err)
 	require.Nil(t, resultURL)
-	require.NotNil(t, resultReq)
 
 	// Test 2.
 	req = httptest.NewRequest(http.MethodGet, upstreamRaw, nil)
 	req = req.WithContext(context.WithValue(req.Context(), request.ReqContextKey, reqCtx))
 
-	resultURL, resultReq, err = self.HandleRequest(req.URL, req)
+	resultURL, err = self.HandleRequest(req.URL, &req)
 	require.Nil(t, err)
 	require.Equal(t, upstreamURL.String(), resultURL.String())
-	require.NotNil(t, resultReq)
 
 	// Test 3.
 	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/test?served=true", host), nil)
 	req = req.WithContext(context.WithValue(req.Context(), request.ReqContextKey, reqCtx))
 
-	resultURL, resultReq, err = self.HandleRequest(req.URL, req)
+	resultURL, err = self.HandleRequest(req.URL, &req)
 	require.Nil(t, err)
 	require.Nil(t, resultURL)
-	require.NotNil(t, resultReq)
 
 	// Test 4.
 	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/test?served=true", upstreamHost), nil)
 	req = req.WithContext(context.WithValue(req.Context(), request.ReqContextKey, reqCtx))
 
-	resultURL, resultReq, err = self.HandleRequest(req.URL, req)
+	resultURL, err = self.HandleRequest(req.URL, &req)
 	require.Nil(t, err)
 	require.Nil(t, resultURL)
-	require.NotNil(t, resultReq)
 
 	// Test 5.
 	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/test?served=false", host), nil)
 	req = req.WithContext(context.WithValue(req.Context(), request.ReqContextKey, reqCtx))
 
-	resultURL, resultReq, err = self.HandleRequest(req.URL, req)
+	resultURL, err = self.HandleRequest(req.URL, &req)
 	require.Nil(t, err)
 	require.Nil(t, resultURL)
-	require.NotNil(t, resultReq)
 
 	// Test 6.
 	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/test?served=false", upstreamHost), nil)
 	req = req.WithContext(context.WithValue(req.Context(), request.ReqContextKey, reqCtx))
 
-	resultURL, resultReq, err = self.HandleRequest(req.URL, req)
+	resultURL, err = self.HandleRequest(req.URL, &req)
 	require.Nil(t, err)
 	require.Equal(t, "http://upstream.org:443/test?served=false", resultURL.String())
-	require.NotNil(t, resultReq)
 }
 
 func TestGitCacheLaunchTask(t *testing.T) {
@@ -323,7 +316,6 @@ func TestGitCacheLaunchTask(t *testing.T) {
 		ok        bool
 		req       *http.Request
 		resultURL *url.URL
-		resultReq *http.Request
 	)
 
 	reqCtx := request.RequestContext{}
@@ -341,10 +333,9 @@ func TestGitCacheLaunchTask(t *testing.T) {
 	repoPath := filepath.Join(cachePath, repoContext.hash)
 	os.RemoveAll(repoPath)
 	os.MkdirAll(repoPath, os.ModePerm)
-	resultURL, resultReq, err = self.HandleRequest(req.URL, req)
+	resultURL, err = self.HandleRequest(req.URL, &req)
 	require.Nil(t, err)
 	require.Nil(t, resultURL)
-	require.NotNil(t, resultReq)
 
 	taskIface, ok := repoContext.ext["task"]
 	require.True(t, ok)
@@ -365,7 +356,6 @@ func TestGitCacheReLaunchBusyTask(t *testing.T) {
 		ok        bool
 		req       *http.Request
 		resultURL *url.URL
-		resultReq *http.Request
 	)
 
 	reqCtx := request.RequestContext{}
@@ -386,17 +376,15 @@ func TestGitCacheReLaunchBusyTask(t *testing.T) {
 
 	log.Debug().Msg(repoPath)
 
-	resultURL, resultReq, err = self.HandleRequest(req.URL, req)
+	resultURL, err = self.HandleRequest(req.URL, &req)
 	require.Nil(t, err)
 	require.Nil(t, resultURL)
-	require.NotNil(t, resultReq)
 
 	time.Sleep(500 * time.Millisecond)
 
-	resultURL, resultReq, err = self.HandleRequest(req.URL, req)
+	resultURL, err = self.HandleRequest(req.URL, &req)
 	require.Nil(t, err)
 	require.Nil(t, resultURL)
-	require.NotNil(t, resultReq)
 
 	errIface, ok := repoContext.ext["err"]
 	require.True(t, ok)

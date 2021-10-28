@@ -77,9 +77,9 @@ func (p *FakeHostHandler) RemoteURL(hostURL *url.URL) (*url.URL, error) {
 	return realURL, nil
 }
 
-func (p *FakeHostHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, *http.Request, error) {
+func (p *FakeHostHandler) HandleRequest(reqURL *url.URL, req **http.Request) (*url.URL, error) {
 	directURL, err := p.RemoteURL(reqURL)
-	return directURL, nil, err
+	return directURL, err
 }
 
 func (p *FakeHostHandler) HandleResponse(w http.ResponseWriter, req *http.Request, reqCtx request.RequestContext, body io.Reader, statusCode int) error {

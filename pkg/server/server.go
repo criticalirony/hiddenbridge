@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -52,6 +53,9 @@ type BridgeServer struct {
 
 	// Caches per site reverse proxy servers
 	reverseSiteProxies map[string]*httputil.ReverseProxy
+
+	defaultHost     string
+	listenProxyPort int
 
 	// Keeps track of IPs that point back to this server
 	// used to prevent recursive requests
@@ -139,6 +143,10 @@ func (s *BridgeServer) Init(configFile string) (err error) {
 	}
 
 	s.Opts = config.Get("global")
+
+	// The default "listening" host if one is not provided in the accepted connection
+	s.defaultHost = s.Opts.Get("host.default").String()
+	s.listenProxyPort = s.Opts.Get("ports.proxy").Int()
 
 	// Initialize plugins
 	plugs := map[string]plugins.Plugin{}
@@ -333,79 +341,101 @@ func (s *BridgeServer) DialProxyTimeout(network string, remoteAddress, proxy *ur
 	return proxyConn, nil
 }
 
-// HandleRawConnection allows the processing of a connection from a client and potentially to a remote host
-// before any handshakes or protocols have begun.
-
-// This allows the oppurtunity to do a direct transfer between hosts without any interception of the data.
-// TLS connections can be proxied here without having to MITM the connection; i.e. they can remain secure
-// Plain HTTP requests can be proxied here and directly copied between clients and remote hosts, increasing efficiency
-func (s *BridgeServer) HandleRawConnection(clientConn net.Conn, hostURL *url.URL) (ok bool, err error) {
-	if hostURL.Hostname() == "" {
-		// This can happen if we don't have SNI for TLS or a Host header in HTTP
-		hostname := s.Opts.Get("host.default").String()
-		if hostname == "" {
-			return false, xerrors.Errorf("%s server handle raw connection hostname not available", s.Name)
-		}
-
-		hostURL.Host = fmt.Sprintf("%s:%s", hostname, hostURL.Port())
-	}
-
-	plug := s.findPlugin(hostURL)
+func (s *BridgeServer) RemoteDial(u *url.URL) (net.Conn, error) {
+	plug := s.findPlugin(u)
 	if plug == nil {
-		log.Warn().Msgf("%s server has no supporting plugins for %s", s.Name, hostURL.String())
-
-		return false, nil
+		log.Warn().Msgf("remote dial: no supporting plugins for url: %s", u.String())
+		return nil, nil
 	}
 
-	// TODO abstract this code out so it can be used both here and in MITM code
-	remoteURL, err := plug.RemoteURL(hostURL)
+	remoteURL, err := plug.RemoteURL(u)
 	if err != nil {
-		return false, err
+		return nil, xerrors.Errorf("remote dial: direct connection support: check failure: %w", err)
 	}
 
+	var remoteConn net.Conn
 	if remoteURL != nil {
 		proxyURL, err := plug.ProxyURL(remoteURL)
 		if err != nil {
-			return false, err
+			return nil, xerrors.Errorf("remote dial: proxy requirements failure: %w", err)
 		}
 
-		var remoteConn net.Conn
 		if proxyURL != nil {
 			remoteConn, err = s.DialProxyTimeout("tcp", remoteURL, proxyURL, time.Second*5)
 			if err != nil {
-				return false, err
+				return nil, xerrors.Errorf("remote dial: proxy dial failure: %w", err)
 			}
 		} else {
-			if *remoteURL != *hostURL {
-				remoteConn, err = net.DialTimeout("tcp", remoteURL.Host, time.Second*5)
-				if err != nil {
-					return false, err
-				}
-			} else {
-				// TODO check the recursive here
+			// resolve the URL to an IP and check that it doesn't point to this host, i.e that would be a recursive request
+			if err := s.resolveURLIP(remoteURL); err != nil {
+				return nil, xerrors.Errorf("remote dial: url: ip resolve failure: %w", err)
+			}
 
-				err = xerrors.Errorf("recursive request")
-				return false, xerrors.Errorf("%s server failed to request url %s: %w", s.Name, hostURL.String(), err)
+			remoteConn, err = net.DialTimeout("tcp", remoteURL.Host, time.Second*5)
+			if err != nil {
+				return nil, xerrors.Errorf("remote dial: direct dial failure: %w", err)
 			}
 		}
+	}
 
-		defer remoteConn.Close()
-		var wg sync.WaitGroup
-		wg.Add(2)
+	return remoteConn, nil
+}
 
+// HandleRawConnection allows the processing of a connection from a client and potentially to a remote host
+// before any handshakes or protocols have begun.
+// This allows the oppurtunity to do a direct transfer between hosts without any interception of the data.
+// TLS connections can be proxied here without having to MITM the connection; i.e. they can remain secure
+// Plain HTTP requests can be proxied here and directly copied between clients and remote hosts, increasing efficiency
+func (s *BridgeServer) HandleRawConnection(conn *net.Conn, hostURL *url.URL) (ok bool, err error) {
+	_conn := *conn
+
+	if hostURL == nil {
+		// This can happen if we don't have SNI for TLS or a Host header in HTTP
+		hostURL = &url.URL{}
+	}
+
+	if hostURL.Host == "" {
+		hostname := s.defaultHost
+		if hostname == "" {
+			return false, xerrors.Errorf("raw connection: hostname not available")
+		}
+
+		hostURL.Host = hostname
+	}
+
+	if hostURL.Port() == "" {
+		hostURL.Host += ":" + strconv.Itoa(_conn.LocalAddr().(*net.TCPAddr).Port)
+	}
+
+	remoteConn, err := s.RemoteDial(hostURL)
+	if err != nil {
+		return false, xerrors.Errorf("raw connection: %w", err)
+	}
+
+	if remoteConn != nil {
+		// Start a new go routine to handle this connection and continue on
 		go func() {
-			defer wg.Done()
-			io.Copy(clientConn, remoteConn)
-			clientConn.(CloseWriter).CloseWrite()
+			defer remoteConn.Close()
+			var wg sync.WaitGroup
+			wg.Add(2)
 
-		}()
-		go func() {
-			wg.Done()
-			io.Copy(remoteConn, clientConn)
-			remoteConn.(CloseWriter).CloseWrite()
+			go func() {
+				defer wg.Done()
+				io.Copy(_conn, remoteConn)
+				_conn.(CloseWriter).CloseWrite()
+			}()
+			go func() {
+				wg.Done()
+				io.Copy(remoteConn, _conn)
+				remoteConn.(CloseWriter).CloseWrite()
+			}()
+
+			wg.Wait()
+			_conn.Close()
+			remoteConn.Close()
 		}()
 
-		wg.Wait()
+		*conn = nil
 		return true, nil
 	} else {
 		// This means that this plugin's hosts do not support direct connections and will need further processing
@@ -520,6 +550,26 @@ func (s *BridgeServer) GetCertificate(chi *tls.ClientHelloInfo) (*tls.Certificat
 	return &x509cert, nil
 }
 
+// resolveURLIP resolves the url to an IP address and makes sure that the IP address
+// doesn't point back to this server, thus creating a recursive request cycle
+func (s *BridgeServer) resolveURLIP(u *url.URL) error {
+	// Resolve host to an IP
+	addrs, err := net.LookupHost(u.Hostname())
+	if err != nil {
+		return xerrors.Errorf("IP resolutuion failure")
+	}
+
+	// Check IP to see if its any we're hosting
+	for _, addr := range addrs {
+		if _, ok := s.localIPs[addr]; ok {
+			// We really do seem to have a recursive request
+			return xerrors.Errorf("recursive request IP")
+		}
+	}
+
+	return nil
+}
+
 // ServeHTTP handles the request and returns the response to client
 func (s *BridgeServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	var (
@@ -582,7 +632,7 @@ func (s *BridgeServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 
 		hostsList[reqURL.Hostname()] = struct{}{}
-		reqURL, newReq, err = plug.HandleRequest(reqURL, req)
+		reqURL, err = plug.HandleRequest(reqURL, &req)
 		if err != nil {
 			http.Error(w, xerrors.Errorf("%s server %s plugin failed to handle url %s: %w", s.Name, plug.Name(), req.Host, err).Error(), http.StatusInternalServerError)
 			return
@@ -640,24 +690,10 @@ func (s *BridgeServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// A proxy URL is not needed, but the request host hasn't changed... this might be a cycle
 		// its not a cycle if this server resolves the host differently to the requesting client
 		if proxyURL == nil && (origReqURL.Host == reqURL.Host) {
-			// Resolve host to an IP
-			addrs, err := net.LookupHost(origReqURL.Hostname())
-			if err != nil {
-				err = xerrors.Errorf("internal hostname resolutuion failure")
-				log.Error().Err(err).Msgf("%s server failed to resolve request url %s", s.Name, reqURL.String())
-				http.Error(w, xerrors.Errorf("%s server failed to resolve request url %s: %w", s.Name, reqURL.String(), err).Error(), http.StatusMisdirectedRequest)
+			if err := s.resolveURLIP(&origReqURL); err != nil {
+				log.Error().Err(err).Msgf("url: %s ip resolve failure", reqURL.String())
+				http.Error(w, xerrors.Errorf("url: %s ip resolve failure: %w", reqURL.String(), err).Error(), http.StatusMisdirectedRequest)
 				return
-			}
-
-			// Check IP to see if its any we're hosting
-			for _, addr := range addrs {
-				if _, ok := s.localIPs[addr]; ok {
-					// We really do seem to have a recursive request
-					err = xerrors.Errorf("recursive request")
-					log.Error().Err(err).Msgf("%s server failed to request url %s", s.Name, reqURL.String())
-					http.Error(w, xerrors.Errorf("%s server failed to request url %s: %w", s.Name, reqURL.String(), err).Error(), http.StatusMisdirectedRequest)
-					return
-				}
 			}
 		}
 
@@ -668,12 +704,12 @@ func (s *BridgeServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 		rsp, ok := s.reverseSiteProxies[reqURL.Host]
 		if !ok {
-			revProxy := &url.URL{
+			revProxyHostURL := &url.URL{
 				Scheme: reqURL.Scheme,
 				Host:   reqURL.Host,
 			}
 
-			rsp = httputil.NewSingleHostReverseProxy(revProxy)
+			rsp = httputil.NewSingleHostReverseProxy(revProxyHostURL)
 			rsp.Transport = &http.Transport{
 				Proxy:           http.ProxyURL(proxyURL),
 				TLSClientConfig: tlsConfig,

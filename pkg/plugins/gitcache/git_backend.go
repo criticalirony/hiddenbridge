@@ -9,11 +9,13 @@ import (
 	"hiddenbridge/pkg/utils"
 	"hiddenbridge/pkg/utils/git"
 	"io"
+	"io/fs"
 	"io/ioutil"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +23,10 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/xerrors"
+)
+
+var (
+	ErrBadContext = errors.New("bad context")
 )
 
 type GitService struct {
@@ -39,7 +45,7 @@ type GitRepoContext struct {
 
 var (
 	gitServices = []GitService{
-		{`/HEAD`, http.MethodGet, getHead},
+		{`/HEAD`, http.MethodGet, getTextFile},
 		{`/info/refs`, http.MethodGet, getInfoRefs},
 		{`/objects/info/alternates`, http.MethodGet, getTextFile},
 		{`/objects/info/http-alternates`, http.MethodGet, getTextFile},
@@ -95,6 +101,24 @@ func hdrsNoCache(w http.ResponseWriter) {
 	w.Header().Add("Cache-Control", "no-cache, max-age=0, must-revalidate")
 }
 
+func sendFile(filePath string, fi fs.FileInfo, content_type string, w http.ResponseWriter, req *http.Request) {
+	var (
+		err error
+	)
+
+	if fi == nil {
+		if fi, err = os.Stat(filePath); os.IsNotExist(err) {
+			http.NotFound(w, req)
+			return
+		}
+	}
+
+	w.Header().Set("Content-Type", content_type)
+	w.Header().Set("Content-Length", strconv.FormatInt(fi.Size(), 10))
+	w.Header().Set("Last-Modified", fi.ModTime().Format(http.TimeFormat))
+	http.ServeFile(w, req, filePath)
+}
+
 func repoExists(gitDir string, reqCtx request.RequestContext, repoCtx *GitRepoContext) (bool, error) {
 	if _, err := os.Stat(gitDir); os.IsNotExist(err) {
 		return false, nil
@@ -124,21 +148,29 @@ func repoExists(gitDir string, reqCtx request.RequestContext, repoCtx *GitRepoCo
 	return true, nil
 }
 
-func getHeadReq(req *http.Request) {
+func loadRequestMetadata(req *http.Request) (request.RequestContext, *GitRepoContext, string, error) {
+	var (
+		ok      bool
+		reqCtx  request.RequestContext
+		repoCtx *GitRepoContext
+	)
 
-}
-
-func getHeadResp(w http.ResponseWriter, req *http.Request) {
-
-}
-
-func getHead(w http.ResponseWriter, req *http.Request) {
-	if w == nil {
-		// This is a request handler
-		getHeadReq(req)
-	} else {
-		getHeadResp(w, req)
+	if reqCtx, ok = req.Context().Value(request.ReqContextKey).(request.RequestContext); !ok {
+		log.Error().Msgf("unable to retrieve git cache context for this request: %s", req.URL.String())
+		return nil, nil, "", xerrors.Errorf("unable to retrieve git cache context for this request: %s: %w", req.URL.String(), ErrBadContext)
 	}
+
+	repoPath, ok := mux.Vars(req)["path"]
+	if !ok {
+		return nil, nil, "", xerrors.Errorf("info/refs request failure: repo path is not available: %w", utils.ErrHTTPNotFound)
+	}
+
+	repoCtx = getRepoContext(&url.URL{
+		Host: req.Host,
+		Path: repoPath,
+	})
+
+	return reqCtx, repoCtx, repoPath, nil
 }
 
 func getInfoRefsReq(req *http.Request, reqCtx request.RequestContext, repoCtx *GitRepoContext, repoPath string) error {
@@ -288,58 +320,81 @@ func getInfoRefsResp(w http.ResponseWriter, req *http.Request, reqCtx request.Re
 }
 
 func getInfoRefs(w http.ResponseWriter, req *http.Request) {
-	var (
-		ok      bool
-		reqCtx  request.RequestContext
-		repoCtx *GitRepoContext
-	)
-
-	if reqCtx, ok = req.Context().Value(request.ReqContextKey).(request.RequestContext); !ok {
-		log.Error().Msgf("unable to retrieve git cache context for this request: %s", req.URL.String())
+	reqCtx, repoCtx, repoPath, err := loadRequestMetadata(req)
+	if err != nil {
+		reqCtx["err"] = err
 		return
 	}
-
-	repoPath, ok := mux.Vars(req)["path"]
-	if !ok {
-		reqCtx["err"] = xerrors.Errorf("info/refs request failure: repo path is not available: %w", utils.ErrHTTPNotFound)
-		return
-	}
-
-	repoCtx = getRepoContext(&url.URL{
-		Host: req.Host,
-		Path: repoPath,
-	})
 
 	if w == nil {
 		// This is a request handler
 		reqCtx["err"] = getInfoRefsReq(req, reqCtx, repoCtx, repoPath)
 	} else {
-		var body utils.ReReadCloser
-		var statusCode int
-
-		utils.As(reqCtx["body"], &body)
-		utils.As(reqCtx["statuscode"], &statusCode)
-
 		// This is the response handler
 		reqCtx["err"] = getInfoRefsResp(w, req, reqCtx, repoCtx, repoPath)
 	}
 }
 
-func getTextFile(w http.ResponseWriter, req *http.Request) {
+func getTextFileReq(req *http.Request, reqCtx request.RequestContext, repoCtx *GitRepoContext, repoPath string) error {
+	if !strings.HasPrefix(repoPath, "/") {
+		repoPath = "/" + repoPath
+	}
+
+	var repoRoot string
+	utils.As(reqCtx["reporoot"], &repoRoot)
+	textFile := filepath.Join(repoRoot, repoCtx.hash, strings.TrimPrefix(req.URL.Path, repoPath))
+
+	if _, err := os.Stat(textFile); os.IsExist(err) {
+		// This file can be served by the cache, no need to send the request upstream
+		reqCtx["upstream"] = nil
+	}
+
+	return nil
+}
+
+func getTextFileResp(w http.ResponseWriter, req *http.Request, reqCtx request.RequestContext, repoCtx *GitRepoContext, repoPath string) error {
 	var (
-		ok     bool
-		reqCtx request.RequestContext
+		err      error
+		repoRoot string
+		fi       fs.FileInfo
 	)
 
-	if reqCtx, ok = req.Context().Value(request.ReqContextKey).(request.RequestContext); !ok {
-		log.Error().Msgf("unable to retrieve git cache context for this request: %s", req.URL.String())
-		if w != nil {
-			http.Error(w, fmt.Sprintf("unable to retrieve git cache context for this request: %s", req.URL.String()), http.StatusInternalServerError)
+	if !strings.HasPrefix(repoPath, "/") {
+		repoPath = "/" + repoPath
+	}
+
+	utils.As(reqCtx["reporoot"], &repoRoot)
+	textFile := filepath.Join(repoRoot, repoCtx.hash, strings.TrimPrefix(req.URL.Path, repoPath))
+
+	if fi, err = os.Stat(textFile); os.IsNotExist(err) {
+		// This file can't be served by the cache, either serve the upstream result or issue 404 not found
+		var upstream *url.URL
+		if utils.As(reqCtx["upstream"], upstream) && upstream != nil {
+			return nil
 		}
+
+		http.NotFound(w, req)
+	}
+
+	hdrsNoCache(w)
+	sendFile(textFile, fi, "text/plain", w, req)
+	return nil
+}
+
+func getTextFile(w http.ResponseWriter, req *http.Request) {
+	reqCtx, repoCtx, repoPath, err := loadRequestMetadata(req)
+	if err != nil {
+		reqCtx["err"] = err
 		return
 	}
 
-	_ = reqCtx
+	if w == nil {
+		// This is a request handler
+		reqCtx["err"] = getTextFileReq(req, reqCtx, repoCtx, repoPath)
+	} else {
+		// This is the response handler
+		reqCtx["err"] = getTextFileResp(w, req, reqCtx, repoCtx, repoPath)
+	}
 }
 
 func getInfoPacks(w http.ResponseWriter, req *http.Request) {

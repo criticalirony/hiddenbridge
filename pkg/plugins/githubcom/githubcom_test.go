@@ -55,9 +55,8 @@ func TestHandleRequestChainPlugin(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, uri, nil)
 	req = req.WithContext(context.WithValue(req.Context(), request.ReqContextKey, reqCtx))
 
-	resultURL, resultReq, err := self.HandleRequest(req.URL, req)
+	resultURL, err := self.HandleRequest(req.URL, &req)
 	require.Nil(t, err)
-	require.Nil(t, resultReq)
 	require.NotNil(t, resultURL)
 
 	var chainPlugin string

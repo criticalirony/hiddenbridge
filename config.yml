@@ -4,6 +4,8 @@ global:
   ca.cert: &cacert "keys/hiddenbridgeCA.pem"
   ca.key: "keys/hiddenbridgeCA.key"
   host.default: "hiddenbridge.org"
+  ports.proxy:
+    - 8080
 
 plugins:
   gitcache:

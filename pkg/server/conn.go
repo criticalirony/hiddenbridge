@@ -52,6 +52,9 @@ func (b PeekableConn) CloseWrite() error {
 	return b.Conn.(CloseWriter).CloseWrite()
 }
 
+// NewMultiReaderConn puts multiple readers before the connection reader
+// This means that the all the readers need to be exahusted before the connection
+// reader will be read.
 func NewMultiReaderConn(c net.Conn, readers ...io.Reader) MultiReaderConn {
 	readers = append(readers, c)
 	return MultiReaderConn{
@@ -84,10 +87,10 @@ func (conn ROConn) SetDeadline(t time.Time) error      { return nil }
 func (conn ROConn) SetReadDeadline(t time.Time) error  { return nil }
 func (conn ROConn) SetWriteDeadline(t time.Time) error { return nil }
 
-// connLooksLikeHTTP reports whether a buffer might containt a plaintext HTTP request.
+// connLooksLikeHTTP reports whether a buffer might contain a plaintext HTTP request.
 func connLooksLikeHTTP(buf []byte) bool {
 	switch string(buf[:5]) {
-	case "GET /", "HEAD ", "POST ", "PUT /", "OPTIO", "PROPF":
+	case "GET /", "HEAD ", "POST ", "PUT /", "OPTIO", "PROPF", "CONNE":
 		return true
 	}
 	return false

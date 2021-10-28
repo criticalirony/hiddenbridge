@@ -62,18 +62,19 @@ func (p *GitCacheHandler) Init(opts *options.OptionValue) error {
 	return nil
 }
 
-func (p *GitCacheHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, *http.Request, error) {
+func (p *GitCacheHandler) HandleRequest(reqURL *url.URL, req **http.Request) (*url.URL, error) {
+	_req := *req // Initialize the local request
 	log.Debug().Msgf("%s handling request: %s", p.Name(), reqURL.String())
 
-	if req.Method == http.MethodHead {
-		req.Method = http.MethodGet
+	if _req.Method == http.MethodHead {
+		_req.Method = http.MethodGet
 	}
 
 	// Find a matching route for our request
 	var match mux.RouteMatch
-	var hasRoute bool = p.r.Match(req, &match)
+	var hasRoute bool = p.r.Match(_req, &match)
 
-	reqCtx := req.Context().Value(request.ReqContextKey).(request.RequestContext)
+	reqCtx := _req.Context().Value(request.ReqContextKey).(request.RequestContext)
 
 	// Pass context data between this request handler and our respective response handler
 	reqCtx["reporoot"] = p.cachePath
@@ -90,17 +91,19 @@ func (p *GitCacheHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*ur
 			reqCtx["upstream"] = reqURL
 		}
 
-		req = mux.SetURLVars(req, match.Vars)
-		match.Handler.ServeHTTP(nil, req) // Handle the request, but you can't send anything as a response, ResponseHandler will do that
+		_req = mux.SetURLVars(_req, match.Vars)
+		*req = _req // Update the callers request
+
+		match.Handler.ServeHTTP(nil, _req) // Handle the request, but you can't send anything as a response, ResponseHandler will do that
 
 		var err error
 		if utils.As(reqCtx["err"], &err) && err != nil {
-			return nil, nil, xerrors.Errorf("route handler failure: %w", err)
+			return nil, xerrors.Errorf("route handler failure: %w", err)
 		}
 
 		// The route handler may have updated the upstream reqURL so set it to its new value here
 		if !utils.As(reqCtx["upstream"], &reqURL) {
-			return nil, nil, xerrors.Errorf("update request URL failure")
+			return nil, xerrors.Errorf("update request URL failure")
 		}
 	}
 
@@ -110,7 +113,7 @@ func (p *GitCacheHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*ur
 		}
 	}
 
-	return reqURL, req, nil
+	return reqURL, nil
 
 }
 

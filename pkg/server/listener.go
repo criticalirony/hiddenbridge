@@ -26,7 +26,7 @@ func (e tlsUpgradeError) Temporary() bool { return true } // This allows the out
 
 type Listener struct {
 	inner               net.Listener
-	HandleRawConnection func(clientConn net.Conn, hostURL *url.URL) (ok bool, err error)
+	HandleRawConnection func(clientConn *net.Conn, hostURL *url.URL) (ok bool, err error)
 	GetCertificate      func(chi *tls.ClientHelloInfo) (*tls.Certificate, error)
 }
 
@@ -43,119 +43,122 @@ func Listen(network, address string) (*Listener, error) {
 	return l, nil
 }
 
+// GetConnectionHost returns the target host for the connection
+// HTTP: "host" header field
+// TLS: client HELLO server name
+func (l *Listener) GetConnectionHost(conn *net.Conn) (*url.URL, error) {
+	_conn := *conn
+
+	peekConn := NewPeekableConn(_conn)
+
+	hdr, err := peekConn.Peek(5)
+	if err != nil {
+		return nil, xerrors.Errorf("failed to initialize peekable conn: %w", err)
+	}
+
+	connCopyBuffer := bytes.Buffer{}
+	wrappedReader := io.TeeReader(peekConn, &connCopyBuffer)
+
+	var hostURL *url.URL
+
+	if !connLooksLikeHTTP(hdr) {
+		// This is most probably a TLS connection - check for a ClientHello message
+		clientHello, err := ReadClientHello(bufio.NewReader(wrappedReader))
+		if err != nil {
+			return nil, xerrors.Errorf("failed to read client hello: %w", err)
+		}
+
+		port := strconv.Itoa(_conn.LocalAddr().(*net.TCPAddr).Port)
+
+		if clientHello.ServerName != "" {
+			hostURL, err = utils.NormalizeURL(fmt.Sprintf("%s:%s", clientHello.ServerName, port))
+			if err != nil {
+				return nil, xerrors.Errorf("failed to normalize url: %w", err)
+			}
+		}
+	} else {
+		var req *http.Request
+
+		// This is a plain text HTTP message, find the HOST header
+		req, err = http.ReadRequest(bufio.NewReader(wrappedReader))
+		if err != nil {
+			return nil, xerrors.Errorf("failed to read http request: %w", err)
+		}
+
+		if req.Host != "" {
+			if hostURL, err = utils.NormalizeURL(req.Host); err != nil {
+				return nil, xerrors.Errorf("failed to normalize url: %w", err)
+			}
+		}
+	}
+
+	*conn = NewMultiReaderConn(peekConn, &connCopyBuffer) // Update conn - this effectively "resets" the conn back to an unread state
+	return hostURL, nil
+}
+
 func (l *Listener) Accept() (net.Conn, error) {
 
 	var (
 		err         error
-		innerConn   net.Conn
+		conn        net.Conn
 		wrappedConn net.Conn
-
-		hdr []byte
-
-		hostURL *url.URL
+		hostURL     *url.URL
 	)
 
 acceptLoop:
-	for {
-		innerConn, err = l.inner.Accept()
-		if err != nil {
-			return nil, err
-		}
-
-		peekConn := NewPeekableConn(innerConn)
-		hdr, err = peekConn.Peek(5)
-		if err != nil {
-			err = xerrors.Errorf("failed to initialize peekable conn: %w", err)
-			break
-		}
-
-		log.Debug().Msgf("Accepted Connection: %s -> %s", innerConn.RemoteAddr().String(), innerConn.LocalAddr().String())
-
-		port := strconv.Itoa(innerConn.LocalAddr().(*net.TCPAddr).Port)
-
-		copiedBuffer := bytes.Buffer{}
-		wrappedReader := io.TeeReader(peekConn, &copiedBuffer)
-
-		var clientHello *tls.ClientHelloInfo
-
-		if !connLooksLikeHTTP(hdr) {
-			// This is most probably a TLS connection - check for a ClientHello message
-			clientHello, err = ReadClientHello(bufio.NewReader(wrappedReader))
-			if err != nil {
-				err = xerrors.Errorf("failed to read client hello: %w", err)
-				break
-			}
-
-			if clientHello.ServerName != "" {
-				hostURL, err = utils.NormalizeURL(fmt.Sprintf("%s:%s", clientHello.ServerName, port))
-				if err != nil {
-					err = xerrors.Errorf("failed to normalize url: %w", err)
-					break
-				}
-			} else {
-				hostURL = &url.URL{}
-			}
-			hostURL.Scheme = "https"
-		} else {
-			var r *http.Request
-
-			// This is a plain text HTTP message, find the HOST header
-			r, err = http.ReadRequest(bufio.NewReader(wrappedReader))
-			if err != nil {
-				break
-			}
-
-			if r.Host != "" {
-				if hostURL, err = utils.NormalizeURL(r.Host); err != nil {
-					err = xerrors.Errorf("failed to normalize url: %w", err)
-					break
-				}
-			} else {
-				hostURL = &url.URL{}
-			}
-			hostURL.Scheme = "http"
-		}
-
-		hostURL.Host = fmt.Sprintf("%s:%s", hostURL.Hostname(), port)
-		wrappedConn = NewMultiReaderConn(peekConn, &copiedBuffer)
-
-		if l.HandleRawConnection != nil {
-			ok, err := l.HandleRawConnection(wrappedConn, hostURL)
-			if !ok && err != nil {
-				log.Error().Err(err).Msgf("failure to handle incoming connection on %s", wrappedConn.LocalAddr().String())
-				wrappedConn.Close()
-				continue
-			}
-
-			if ok {
-				if err != nil {
-					log.Panic().Err(err).Msg("unexpected error occurred")
-				}
-			} else {
-				// Raw connection was not handled, but no error this means we can pass the connection on to the http handler
-				// for mitm processing
-				break
-			}
-		} else {
-			log.Warn().Msg("no registered connection handler connection will be intercepted")
-			break
-		}
-	}
-
+	conn, err = l.inner.Accept()
 	if err != nil {
-		log.Error().Err(err).Msgf("listener internal error: %+v", err)
-		if wrappedConn != nil {
-			wrappedConn.Close()
-		} else if innerConn != nil {
-			innerConn.Close()
+		return nil, err
+	}
+
+	log.Debug().Msgf("accepted connection: %s -> %s", conn.RemoteAddr().String(), conn.LocalAddr().String())
+
+	// Connections can be:
+	// 1. HTTP
+	// 2. HTTPS
+	// 3. Proxied over HTTP
+	// 4. Proxied over HTTPS
+
+	// Direct connections can be:
+	// 1. HTTP (with HOST)
+	// 2. TLS (with SNI)
+	// - No protocol exchange is required. Raw read from client to remote host
+
+	// Proxied "direct" connections can be:
+	// 1. HTTP after parsing CONNECT request
+	// 2. HTTPS ater TLS handshake/accepting and parsing CONNECT request
+
+	hostURL, err = l.GetConnectionHost(&conn)
+	if err != nil {
+		conn.Close()
+		log.Error().Err(err).Msgf("connection host: failed to retrieve host url: connection lost")
+		goto acceptLoop // Try again
+	}
+
+	if l.HandleRawConnection != nil {
+		ok, err := l.HandleRawConnection(&wrappedConn, hostURL)
+		if ok && err != nil {
+			// The incoming connection should have been handled, but we received an unexpected error
+			// this is a critical issue and probalby means a bug that needs fixing
+			log.Panic().Err(err).Msg("unexpected error occurred")
 		}
 
-		// Reset and try again
-		wrappedConn = nil
-		innerConn = nil
-		err = nil
+		if err != nil {
+			// We couldn't handle this connection due to an error occurring.
+			// This could be anything; probably due to protocol error or connection instability.
+			// Just bail on this connection and try again
+			log.Error().Err(err).Msgf("failure to handle incoming connection on %s", wrappedConn.LocalAddr().String())
+			conn.Close()
+		}
+
+		// If the raw connection was handled without error, then its now the handler's responsibilty to close the connection
+		// this is because most likely the handler will now be running in its own go-routine
 		goto acceptLoop
+	} else {
+		log.Warn().Msg("no registered connection handler: connection will be intercepted")
 	}
+
+	log.Panic().Msg("TODO: finish implementing raw handler above!")
 
 	if hostURL.Scheme == "https" {
 		// Upgrade connection to TLS

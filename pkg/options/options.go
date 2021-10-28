@@ -45,93 +45,136 @@ func splitKeyIndex(key string) (string, string) {
 	return key[:idx], key[idx+1 : len(key)-1]
 }
 
-func (o *OptionValue) Set(key string, value interface{}) error {
+func validateTypes(typ reflect.Type, values []interface{}) bool {
+	for _, value := range values {
+		if reflect.TypeOf(value) != typ {
+			return false
+		}
+	}
+
+	return true
+}
+
+func (o *OptionValue) SetLeaf(valIface interface{}) error {
+	if valIface == nil {
+		o.Value = nil // redundant, but explicit
+		return nil
+	}
+
+	// log.Debug().Msgf("set leaf called: values: %v", valIface)
+
+	reflectType := reflect.TypeOf(valIface)
+
+	switch reflectType.Kind() {
+	case reflect.Map:
+		reflectValue := reflect.ValueOf(valIface)
+
+		if reflectType.Key().Kind() == reflect.String {
+			if reflectType.Elem().Kind() == reflect.Ptr &&
+				reflectType.Elem().Elem().String() == optionValueName {
+
+				// Should be safe to just set this value as-is
+				// We are just adding map[string]*options.OptionValue to this OptionValue, i.e. extending it
+				o.Value = valIface
+				return nil
+			}
+
+			var childMap map[string]*OptionValue
+
+			if o.Value == nil {
+				childMap = map[string]*OptionValue{}
+				o.Value = childMap
+			} else {
+				childMap = o.Value.(map[string]*OptionValue)
+			}
+
+			for _, valueKey := range reflectValue.MapKeys() {
+				childMapKey, childMapPath := splitKeyPath(valueKey.String())
+				childMapChild, ok := childMap[childMapKey]
+				if !ok {
+					childMapChild = &OptionValue{}
+					childMap[childMapKey] = childMapChild
+				}
+
+				if err := childMapChild.Set(childMapPath, reflectValue.MapIndex(valueKey).Interface()); err != nil {
+					return xerrors.Errorf("key [%s] path %s failure to set child value %#v", childMapKey, childMapPath, reflectValue.MapIndex(valueKey).Interface())
+				}
+			}
+
+			return nil
+		}
+
+		return xerrors.Errorf("map type not supported ")
+	case reflect.Slice, reflect.Array:
+		reflectValue := reflect.ValueOf(valIface)
+		if reflectType.Elem().String() == optionValueName {
+			// Should be safe to just set this value as-is
+			// We are just adding []options.OptionValue to this OptionValue, i.e. extending it
+			o.Value = valIface
+			return nil
+		}
+
+		childList := make([]OptionValue, reflectValue.Len())
+		o.Value = childList
+
+		for i := 0; i < reflectValue.Len(); i++ {
+			childListValue := reflectValue.Index(i).Interface()
+			childList[i].Set("", childListValue)
+		}
+
+		return nil
+	case reflect.Ptr:
+		if reflectType.Elem().String() == optionValueName {
+			// No need to add extra nesting just for a single OptionValue
+			// we can just pass in its value instead
+			o.Value = valIface.(*OptionValue).Value
+			return nil
+		}
+	case reflect.Struct:
+		if reflectType.String() == optionValueName {
+			// No need to add extra nesting just for a single OptionValue
+			// we can just pass in its value instead
+			o.Value = valIface.(OptionValue).Value
+			return nil
+		}
+	}
+
+	o.Value = valIface
+	return nil
+}
+
+func (o *OptionValue) Set(key string, values ...interface{}) error {
 	var err error
 	var child *OptionValue
 
+	if len(values) == 0 {
+		return nil // nothing to do
+	}
+
+	valType := reflect.TypeOf(values[0])
+	if !validateTypes(valType, values) {
+		return xerrors.Errorf("optionvalue set: values are not homogeneous")
+	}
+
+	var valIface interface{}
+	if len(values) == 1 {
+		valIface = values[0]
+	} else {
+		// Convert slice of interfaces to an interface of slice of types
+
+		sl := reflect.MakeSlice(reflect.SliceOf(valType), len(values), len(values))
+		for i, item := range values {
+			sl.Index(i).Set(reflect.ValueOf(item))
+		}
+		valIface = sl.Interface()
+	}
+
 	// If key is empty then we set the root value
 	if len(key) == 0 {
-		if value != nil {
-			reflectType := reflect.TypeOf(value)
-
-			switch reflectType.Kind() {
-			case reflect.Map:
-				reflectValue := reflect.ValueOf(value)
-
-				if reflectType.Key().Kind() == reflect.String {
-					if reflectType.Elem().Kind() == reflect.Ptr &&
-						reflectType.Elem().Elem().String() == optionValueName {
-
-						// Should be safe to just set this value as-is
-						// We are just adding map[string]*options.OptionValue to this OptionValue, i.e. extending it
-						o.Value = value
-						return nil
-					}
-
-					var childMap map[string]*OptionValue
-
-					if o.Value == nil {
-						childMap = map[string]*OptionValue{}
-						o.Value = childMap
-					} else {
-						childMap = o.Value.(map[string]*OptionValue)
-					}
-
-					for _, valueKey := range reflectValue.MapKeys() {
-						childMapKey, childMapPath := splitKeyPath(valueKey.String())
-						childMapChild, ok := childMap[childMapKey]
-						if !ok {
-							childMapChild = &OptionValue{}
-							childMap[childMapKey] = childMapChild
-						}
-
-						if err := childMapChild.Set(childMapPath, reflectValue.MapIndex(valueKey).Interface()); err != nil {
-							return xerrors.Errorf("key %s[%s] path %s failure to set child value %#v", key, childMapKey, childMapPath, reflectValue.MapIndex(valueKey).Interface())
-						}
-					}
-
-					return nil
-				}
-
-				return xerrors.Errorf("map type not supported ")
-			case reflect.Slice, reflect.Array:
-				reflectValue := reflect.ValueOf(value)
-				if reflectType.Elem().String() == optionValueName {
-					// Should be safe to just set this value as-is
-					// We are just adding []options.OptionValue to this OptionValue, i.e. extending it
-					o.Value = value
-					return nil
-				}
-
-				childList := make([]OptionValue, reflectValue.Len())
-				o.Value = childList
-
-				for i := 0; i < reflectValue.Len(); i++ {
-					childListValue := reflectValue.Index(i).Interface()
-					childList[i].Set("", childListValue)
-				}
-
-				return nil
-			case reflect.Ptr:
-				if reflectType.Elem().String() == optionValueName {
-					// No need to add extra nesting just for a single OptionValue
-					// we can just pass in its value instead
-					o.Value = value.(*OptionValue).Value
-					return nil
-				}
-			case reflect.Struct:
-				if reflectType.String() == optionValueName {
-					// No need to add extra nesting just for a single OptionValue
-					// we can just pass in its value instead
-					o.Value = value.(OptionValue).Value
-					return nil
-				}
-			}
-		}
-
-		o.Value = value
-		return nil
+		return o.SetLeaf(valIface)
 	}
+
+	// log.Debug().Msgf("set called: key: %s values: %v", key, values)
 
 	if o.Value == nil {
 		o.Value = map[string]*OptionValue{}
@@ -172,7 +215,7 @@ func (o *OptionValue) Set(key string, value interface{}) error {
 		child = &childList[keyIndex]
 	}
 
-	return child.Set(path, value)
+	return child.Set(path, valIface)
 }
 
 func (o *OptionValue) GetDefault(key string, def interface{}) *OptionValue {

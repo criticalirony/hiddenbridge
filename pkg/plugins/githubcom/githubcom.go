@@ -47,16 +47,17 @@ func (p *GithubHandler) RemoteURL(hostURL *url.URL) (*url.URL, error) {
 	return nil, nil // We need this connection to be proxied
 }
 
-func (p *GithubHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, *http.Request, error) {
+func (p *GithubHandler) HandleRequest(reqURL *url.URL, req **http.Request) (*url.URL, error) {
 	log.Debug().Msgf("%s handling request: %s", p.Name(), reqURL.String())
+	_req := *req
 
-	reqCtx := req.Context().Value(request.ReqContextKey).(request.RequestContext)
+	reqCtx := _req.Context().Value(request.ReqContextKey).(request.RequestContext)
 	if len(p.cacheHost) > 0 {
 		// We have a caching host (plugin) so encode current request as a query param and pass onto the cacher
 		reqCtx["chain"] = p.cacheHost
 	}
 
-	return reqURL, nil, nil
+	return reqURL, nil
 }
 
 func (p *GithubHandler) HandleResponse(w http.ResponseWriter, req *http.Request, reqCtx request.RequestContext, body io.Reader, statusCode int) error {

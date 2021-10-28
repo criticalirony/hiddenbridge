@@ -62,17 +62,18 @@ func (p *FakeRedirectHostHandler) ProxyURL(hostURL *url.URL) (*url.URL, error) {
 	return nil, nil
 }
 
-func (p *FakeRedirectHostHandler) HandleRequest(reqURL *url.URL, req *http.Request) (*url.URL, *http.Request, error) {
+func (p *FakeRedirectHostHandler) HandleRequest(reqURL *url.URL, req **http.Request) (*url.URL, error) {
+	_req := *req
 
-	path := req.URL.Path
+	path := _req.URL.Path
 	if strings.Contains(path, "/custom") {
-		return nil, nil, nil
+		return nil, nil
 	}
 
 	nextURL := *reqURL
 	nextURL.Host = fmt.Sprintf("%s:%s", "fakehost.com", reqURL.Port())
 
-	return &nextURL, nil, nil
+	return &nextURL, nil
 }
 
 func (p *FakeRedirectHostHandler) HandleResponse(w http.ResponseWriter, req *http.Request, reqCtx request.RequestContext, body io.Reader, statusCode int) error {

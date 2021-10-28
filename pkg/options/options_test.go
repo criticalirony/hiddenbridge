@@ -2,13 +2,31 @@ package options
 
 import (
 	"flag"
+	"hiddenbridge/pkg/utils"
+	"os"
 	"sort"
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
+
+func init() {
+	SetupLogging("debug")
+}
+
+func SetupLogging(level string) {
+	logLevel, err := zerolog.ParseLevel(level)
+	if err != nil {
+		log.Panic().Err(err).Msgf("Failed to parse log level: %s", level)
+	}
+
+	noColor := !utils.IsTerminal()
+	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, NoColor: noColor}).Level(logLevel).With().Timestamp().Logger().With().Caller().Logger()
+}
 
 func TestOptionSimple(t *testing.T) {
 	o1 := &OptionValue{Value: 5}
@@ -796,4 +814,34 @@ goproxy:
 	err = o1.Set("", yamlInput)
 	require.Nil(t, err)
 	require.Equal(t, expected, o1)
+}
+
+func TestOptionValFromList(t *testing.T) {
+	// If the option is a list, but only contains a single value, it should be possible
+	// to just retrieve the value as though it were not in a list
+
+	o := &OptionValue{}
+	err := o.Set("", []int{5, 6, 7, 8})
+	require.Nil(t, err)
+
+	val := o.Get("").IntList()[1]
+	require.Equal(t, 6, val)
+
+	o = &OptionValue{}
+	err = o.Set("", 9, 12, 15, 18)
+	require.Nil(t, err)
+
+	val = o.Get("").IntList()[3]
+	require.Equal(t, 18, val)
+
+	o = &OptionValue{}
+	err = o.Set("", 8080)
+	require.Nil(t, err)
+
+	val = o.Get("").IntList()[0]
+	require.Equal(t, 8080, val)
+
+	val = o.Get("").Int()
+	require.Equal(t, 8080, val)
+
 }
