@@ -77,13 +77,9 @@ func (p *GithubHandler) HandleResponse(w http.ResponseWriter, req *http.Request,
 
 		var port string
 		if locationURL.Scheme == "https" {
-			port = p.Opts.GetDefault("ports.https", "443").List()[0].String()
+			p.Opts.GetDefault("ports.https[0]", "443").As(&port)
 		} else {
-			port = p.Opts.GetDefault("ports.http", "80").List()[0].String()
-		}
-
-		if len(port) == 0 {
-			port = locationURL.Port()
+			p.Opts.GetDefault("ports.http[0]", "80").As(&port)
 		}
 
 		locationURL.Host = fmt.Sprintf("%s:%s", locationURL.Hostname(), port)

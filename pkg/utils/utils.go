@@ -285,7 +285,7 @@ func As(src interface{}, target interface{}) bool {
 	val := reflect.ValueOf(target)
 	typ := val.Type()
 	if typ.Kind() != reflect.Ptr || val.IsNil() {
-		panic("as: target must be a non-nil pointer")
+		log.Panic().Msg("as: target must be a non-nil pointer")
 	}
 
 	if src == nil {

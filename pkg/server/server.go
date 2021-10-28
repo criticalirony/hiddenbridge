@@ -55,7 +55,7 @@ type BridgeServer struct {
 	reverseSiteProxies map[string]*httputil.ReverseProxy
 
 	defaultHost     string
-	listenProxyPort int
+	listenProxyPort string
 
 	// Keeps track of IPs that point back to this server
 	// used to prevent recursive requests
@@ -146,7 +146,7 @@ func (s *BridgeServer) Init(configFile string) (err error) {
 
 	// The default "listening" host if one is not provided in the accepted connection
 	s.defaultHost = s.Opts.Get("host.default").String()
-	s.listenProxyPort = s.Opts.Get("ports.proxy").Int()
+	s.listenProxyPort = s.Opts.Get("ports.proxy").String()
 
 	// Initialize plugins
 	plugs := map[string]plugins.Plugin{}
@@ -163,7 +163,8 @@ func (s *BridgeServer) Init(configFile string) (err error) {
 		plug := plugNewFn()
 		plug.Init(plugOpts)
 
-		hosts := plugOpts.Get("hosts").StringList()
+		var hosts []string
+		plugOpts.Get("hosts").As(&hosts)
 		for _, host := range hosts {
 			plugs[host] = plug
 		}
@@ -178,14 +179,23 @@ func (s *BridgeServer) Init(configFile string) (err error) {
 		}
 	}
 
+	if s.listenProxyPort != "" {
+		// Check that none of the plugins want to listen on the http proxy port
+		if _, ok := portsSet[s.listenProxyPort]; ok {
+			return xerrors.Errorf("port conflict: plugins listening on server reserved port: %s", s.listenProxyPort)
+		}
+
+		// Now add the proxy port to the set so the server will listen on it
+		portsSet[s.listenProxyPort] = struct{}{}
+	}
+
 	s.Plugins = plugs
 
 	var listenIP string
 
 	if listenIP = s.Opts.Get("listen.dev").String(); listenIP != "" {
 		if listenIP, err = utils.GetInterfaceIpv4Addr(listenIP); err != nil {
-			err = xerrors.Errorf("failed to get ipv4 address from device %s: %w", listenIP, err)
-			return err
+			return xerrors.Errorf("failed to get ipv4 address from device %s: %w", listenIP, err)
 		}
 	} else {
 		listenIP = s.Opts.GetDefault("listen.ip", "").String() // Either it will use the IP address provided in the config or listen on all devices
@@ -207,7 +217,8 @@ func (s *BridgeServer) Init(configFile string) (err error) {
 	s.localIPs = utils.GetLocalIPs()
 
 	// Also include external IPs
-	externalIPs := s.Opts.GetDefault("ips.external", nil).StringList()
+	var externalIPs []string
+	s.Opts.GetDefault("ips.external", nil).As(&externalIPs)
 	for _, ip := range externalIPs {
 		s.localIPs[ip] = struct{}{}
 	}
@@ -239,6 +250,7 @@ func (s *BridgeServer) Start() (err error) {
 				return
 			}
 
+			// l.HandleProxyConnection = s.HandleProxyConnection
 			l.HandleRawConnection = s.HandleRawConnection
 			l.GetCertificate = s.GetCertificate
 
@@ -379,6 +391,11 @@ func (s *BridgeServer) RemoteDial(u *url.URL) (net.Conn, error) {
 	}
 
 	return remoteConn, nil
+}
+
+// HandleProxyConnection allows the accepted connection to be "upgraded" to a proxy connection
+func (s *BridgeServer) HandleProxyConnection(conn *net.Conn, hostURL *url.URL) (ok bool, err error) {
+	return false, nil
 }
 
 // HandleRawConnection allows the processing of a connection from a client and potentially to a remote host

@@ -1,48 +1,70 @@
 package options
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
-	"sort"
+	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/xerrors"
 )
 
 var (
-	optionValueName = reflect.TypeOf((*OptionValue)(nil)).Elem().String()
+	ErrInvalidArgs = errors.New("invalid args")
 )
+
+// OptionValue API
+// o = &OptionValue{}
+// o.set("", val)
+// o.set("path", val1, val2, .... , valN)
+// o.set("path.subpath", val)
+// o.set("path[N], val)
+// o.set("path[key], val")
+// o.set("path[N].subpath, val)
+// o.set("path[key].subpath, val")
+//
+// o.Get has equivalent functions
+// o.As will attempt an automatic conversion
 
 type OptionValue struct {
 	Value interface{}
 }
 
+var splitKeyPathRE = regexp.MustCompile(`^(?:(\w+)|\[([\w\.]+)\])\.?(.*)$`)
+
 // splitKeyPath gives us the root key and the remaining subkeys
-func splitKeyPath(key string) (string, string) {
-	idx := strings.Index(key, ".")
-	if idx < 0 {
-		return key, ""
+func splitKeyPath(path string) (string, string) {
+
+	var key string
+	parts := []string{}
+
+	key = path
+	for {
+		// This looping is needed to flatten possible nested keys:
+		// root[nested.key.here].another.path etc.
+		m := splitKeyPathRE.FindStringSubmatch(key)
+
+		key = m[1]
+		if key == "" {
+			key = m[2]
+		}
+
+		if len(m[3]) == 0 {
+			// No more remaining path, so the key has been flattened by this point
+			break
+		}
+
+		// "fancy" prepend
+		parts = append(parts, "")
+		copy(parts[1:], parts)
+		parts[0] = m[3]
 	}
 
-	return key[:idx], key[idx+1:] // Skip the leading "."
-}
-
-// splitKeyIndex gives us the index within the key, assuming its a map or list
-func splitKeyIndex(key string) (string, string) {
-	idx := strings.Index(key, "[")
-	if idx < 0 {
-		return key, ""
-	}
-
-	if !strings.HasSuffix(key, "]") {
-		log.Warn().Msgf("malformed options path %s", key)
-		return key, ""
-	}
-
-	return key[:idx], key[idx+1 : len(key)-1]
+	return key, strings.Join(parts, ".")
 }
 
 func validateTypes(typ reflect.Type, values []interface{}) bool {
@@ -55,456 +77,376 @@ func validateTypes(typ reflect.Type, values []interface{}) bool {
 	return true
 }
 
-func (o *OptionValue) SetLeaf(valIface interface{}) error {
-	if valIface == nil {
-		o.Value = nil // redundant, but explicit
-		return nil
+func (o *OptionValue) setMap(index, path string, args interface{}) error {
+	var (
+		ok bool
+	)
+
+	var valueMap map[string]*OptionValue
+	if o.Value == nil {
+		valueMap = map[string]*OptionValue{}
+		o.Value = valueMap
+	} else {
+		if valueMap, ok = o.Value.(map[string]*OptionValue); !ok {
+			return xerrors.Errorf("optionvalue setleaf: existing type: %T: is not map: %w", o.Value, ErrInvalidArgs)
+		}
 	}
 
-	// log.Debug().Msgf("set leaf called: values: %v", valIface)
+	var child *OptionValue
+	if child, ok = valueMap[index]; !ok {
+		child = &OptionValue{}
+		valueMap[index] = child
+	}
 
-	reflectType := reflect.TypeOf(valIface)
+	return child.set(path, args)
+}
 
-	switch reflectType.Kind() {
+func (o *OptionValue) setList(index int, path string, args interface{}) error {
+	var (
+		ok bool
+	)
+
+	var valueList []*OptionValue
+	if o.Value != nil {
+		if valueList, ok = o.Value.([]*OptionValue); !ok {
+			return xerrors.Errorf("optionvalue setleaf: existing type: %T: is not list: %w", o.Value, ErrInvalidArgs)
+		}
+	}
+
+	var child *OptionValue
+	if len(valueList) <= index {
+		newList := make([]*OptionValue, index+1)
+		if len(valueList) > 0 {
+			copy(newList, valueList)
+		}
+		child = &OptionValue{}
+		newList[index] = child
+		o.Value = newList
+	} else {
+		child = valueList[index]
+	}
+
+	return child.set(path, args)
+}
+
+func (o *OptionValue) setLeaf(args interface{}) error {
+	var (
+	// argsIface interface{}
+	)
+
+	argsIfaceType := reflect.TypeOf(args)
+	argsValue := reflect.ValueOf(args)
+	switch argsIfaceType.Kind() {
+	case reflect.Array, reflect.Slice:
+		// If there's no items, nothing to do
+		if argsValue.Len() == 0 {
+			return nil
+		}
+
+		// If there's only one item, don't set it as a list, instead just set the single item
+		if argsValue.Len() == 1 {
+			if err := o.set("", argsValue.Index(0).Interface()); err != nil {
+				return xerrors.Errorf("optionvalue setleaf: set: %v failure: %w", argsValue.Index(0).Interface(), err)
+			}
+
+			return nil
+		}
+
+		// More than one item, set each in the list with a "key" of its index
+		for i := 0; i < argsValue.Len(); i++ {
+			if err := o.set(strconv.Itoa(i), argsValue.Index(i).Interface()); err != nil {
+				return xerrors.Errorf("optionvalue setleaf: set list: %d: %v failure: %w", i, argsValue.Index(i).Interface(), err)
+			}
+		}
 	case reflect.Map:
-		reflectValue := reflect.ValueOf(valIface)
-
-		if reflectType.Key().Kind() == reflect.String {
-			if reflectType.Elem().Kind() == reflect.Ptr &&
-				reflectType.Elem().Elem().String() == optionValueName {
-
-				// Should be safe to just set this value as-is
-				// We are just adding map[string]*options.OptionValue to this OptionValue, i.e. extending it
-				o.Value = valIface
-				return nil
+		if argsIfaceType.Key().Kind() != reflect.String {
+			return xerrors.Errorf("optionvalue setleaf: map keys must be strings: %w", ErrInvalidArgs)
+		}
+		for _, mapKey := range argsValue.MapKeys() {
+			mapValue := argsValue.MapIndex(mapKey)
+			if err := o.set(mapKey.String(), mapValue.Interface()); err != nil {
+				return xerrors.Errorf("optionvalue setleaf: set map: %s: %v failure: %w", mapKey.String(), mapValue.Interface(), err)
 			}
-
-			var childMap map[string]*OptionValue
-
-			if o.Value == nil {
-				childMap = map[string]*OptionValue{}
-				o.Value = childMap
-			} else {
-				childMap = o.Value.(map[string]*OptionValue)
-			}
-
-			for _, valueKey := range reflectValue.MapKeys() {
-				childMapKey, childMapPath := splitKeyPath(valueKey.String())
-				childMapChild, ok := childMap[childMapKey]
-				if !ok {
-					childMapChild = &OptionValue{}
-					childMap[childMapKey] = childMapChild
-				}
-
-				if err := childMapChild.Set(childMapPath, reflectValue.MapIndex(valueKey).Interface()); err != nil {
-					return xerrors.Errorf("key [%s] path %s failure to set child value %#v", childMapKey, childMapPath, reflectValue.MapIndex(valueKey).Interface())
-				}
-			}
-
-			return nil
 		}
-
-		return xerrors.Errorf("map type not supported ")
-	case reflect.Slice, reflect.Array:
-		reflectValue := reflect.ValueOf(valIface)
-		if reflectType.Elem().String() == optionValueName {
-			// Should be safe to just set this value as-is
-			// We are just adding []options.OptionValue to this OptionValue, i.e. extending it
-			o.Value = valIface
-			return nil
-		}
-
-		childList := make([]OptionValue, reflectValue.Len())
-		o.Value = childList
-
-		for i := 0; i < reflectValue.Len(); i++ {
-			childListValue := reflectValue.Index(i).Interface()
-			childList[i].Set("", childListValue)
-		}
-
-		return nil
-	case reflect.Ptr:
-		if reflectType.Elem().String() == optionValueName {
-			// No need to add extra nesting just for a single OptionValue
-			// we can just pass in its value instead
-			o.Value = valIface.(*OptionValue).Value
-			return nil
-		}
-	case reflect.Struct:
-		if reflectType.String() == optionValueName {
-			// No need to add extra nesting just for a single OptionValue
-			// we can just pass in its value instead
-			o.Value = valIface.(OptionValue).Value
-			return nil
-		}
+	default:
+		o.Value = args
 	}
 
-	o.Value = valIface
 	return nil
 }
 
-func (o *OptionValue) Set(key string, values ...interface{}) error {
-	var err error
-	var child *OptionValue
-
-	if len(values) == 0 {
-		return nil // nothing to do
+func (o *OptionValue) Set(path string, args ...interface{}) (err error) {
+	if len(args) == 0 {
+		return // nothing to do
 	}
 
-	valType := reflect.TypeOf(values[0])
-	if !validateTypes(valType, values) {
-		return xerrors.Errorf("optionvalue set: values are not homogeneous")
+	argsType := reflect.TypeOf(args[0])
+	if !validateTypes(argsType, args) {
+		err := ErrInvalidArgs
+		return xerrors.Errorf("optionvalue: %s args are not homogenous: %w", path, err)
 	}
 
-	var valIface interface{}
-	if len(values) == 1 {
-		valIface = values[0]
+	var argsIface interface{}
+
+	if len(args) == 1 {
+		argsIface = args[0]
 	} else {
-		// Convert slice of interfaces to an interface of slice of types
-
-		sl := reflect.MakeSlice(reflect.SliceOf(valType), len(values), len(values))
-		for i, item := range values {
-			sl.Index(i).Set(reflect.ValueOf(item))
+		// This flatens the varargs into a single interface argument
+		argsList := reflect.MakeSlice(reflect.SliceOf(argsType), len(args), len(args))
+		for i, arg := range args {
+			argsList.Index(i).Set(reflect.ValueOf(arg))
 		}
-		valIface = sl.Interface()
+
+		argsIface = argsList.Interface()
 	}
 
-	// If key is empty then we set the root value
-	if len(key) == 0 {
-		return o.SetLeaf(valIface)
+	return o.set(path, argsIface)
+}
+
+func (o *OptionValue) set(path string, args interface{}) (err error) {
+
+	if path == "" {
+		// We are at leaf node, set leaf value
+		return o.setLeaf(args)
 	}
 
-	// log.Debug().Msgf("set called: key: %s values: %v", key, values)
+	key, path := splitKeyPath(path)
+
+	if indexVal, err := strconv.Atoi(key); err == nil {
+		// The index is an integer and points to a list
+		return o.setList(indexVal, path, args)
+	}
+
+	// The index is a string and points to a map
+	return o.setMap(key, path, args)
+}
+
+func (o *OptionValue) getMap(key string, path string, def interface{}) *OptionValue {
+	var (
+		ok     bool
+		optMap map[string]*OptionValue
+		optVal *OptionValue
+	)
 
 	if o.Value == nil {
-		o.Value = map[string]*OptionValue{}
+		return &OptionValue{def}
 	}
 
-	// keys can now be: "key", "key.subkey", key[subkey] (map), key[index] (list)
-	// "key.sub1.sub2.sub3", "key[subkey].sub2.sub3", key.sub1[sub2].sub3[index]
-	key, path := splitKeyPath(key)
-
-	keyIndex := -1
-	key, rawIndex := splitKeyIndex(key)
-	if len(rawIndex) > 0 {
-		if keyIndex, err = strconv.Atoi(rawIndex); err != nil {
-			keyIndex = -1
-		}
+	if optMap, ok = o.Value.(map[string]*OptionValue); !ok {
+		return &OptionValue{def}
 	}
 
-	childMap, ok := o.Value.(map[string]*OptionValue)
-	if !ok {
-		return xerrors.Errorf("key: %s existing type: %T is immutable and can not be reassigned", key, o.Value)
+	if optVal, ok = optMap[key]; !ok {
+		return &OptionValue{def}
 	}
 
-	child, ok = childMap[key]
-	if !ok {
-		child = &OptionValue{}
-		o.Value.(map[string]*OptionValue)[key] = child
-	}
-
-	if keyIndex >= 0 {
-		childList, ok := child.Value.([]OptionValue)
-		if !ok {
-			childList = make([]OptionValue, keyIndex+1)
-		} else if keyIndex >= len(childList) {
-			childList = append(childList, make([]OptionValue, (keyIndex+1)-len(childList))...)
-		}
-
-		child.Value = childList
-		child = &childList[keyIndex]
-	}
-
-	return child.Set(path, valIface)
+	return optVal.GetDefault(path, def)
 }
 
-func (o *OptionValue) GetDefault(key string, def interface{}) *OptionValue {
-	res := o.get(key)
-	if res == nil {
-		res = &OptionValue{def}
-	}
-
-	return res
-}
-
-func (o *OptionValue) Get(key string) *OptionValue {
-	if o == nil {
-		return nil // This will allow a "valid" but empty fetch from a nil option value
-	}
+func (o *OptionValue) getList(index int, path string, def interface{}) *OptionValue {
+	var (
+		ok      bool
+		optList []*OptionValue
+	)
 
 	if o.Value == nil {
-		log.Warn().Msgf("key: %s has not been assigned", key)
-		return nil
+		return &OptionValue{def}
 	}
 
-	res := o.get(key)
-	if res == nil {
-		log.Warn().Msgf("key: %s not found", key)
-		return nil
+	if optList, ok = o.Value.([]*OptionValue); !ok {
+		return &OptionValue{def}
 	}
 
-	return res
+	if len(optList) <= index {
+		return &OptionValue{def}
+	}
+
+	return optList[index].GetDefault(path, def)
 }
 
-func (o *OptionValue) get(key string) *OptionValue {
-	var err error
-
-	if len(key) == 0 {
+func (o *OptionValue) GetDefault(path string, def interface{}) *OptionValue {
+	if path == "" {
 		return o
 	}
 
-	// keys can now be: "key", "key.subkey", key[subkey] (map), key[index] (list)
-	// "key.sub1.sub2.sub3", "key[subkey].sub2.sub3", key.sub1[sub2].sub3[index]
-	key, path := splitKeyPath(key)
+	key, path := splitKeyPath(path)
 
-	keyIndex := -1
-	key, rawIndex := splitKeyIndex(key)
-	if len(rawIndex) > 0 {
-		if keyIndex, err = strconv.Atoi(rawIndex); err != nil {
-			keyIndex = -1
-
-			if len(path) == 0 {
-				path = rawIndex
-			} else {
-				path = rawIndex + "." + path
-			}
-		}
+	if indexVal, err := strconv.Atoi(key); err == nil {
+		// The index is an integer and points to a list
+		return o.getList(indexVal, path, def)
 	}
 
-	if o.Value == nil {
-		return nil
-	}
+	return o.getMap(key, path, def)
+}
 
-	childMap, ok := o.Value.(map[string]*OptionValue)
-	if !ok {
-		log.Warn().Str("key", key).Str("type", fmt.Sprintf("%T", o.Value)).Msg("immutable type can not reassign")
-		return nil
-	}
-
-	var child *OptionValue
-
-	child, ok = childMap[key]
-	if !ok {
-		return nil
-	}
-
-	if keyIndex >= 0 {
-		childList, ok := child.Value.([]OptionValue)
-		if !ok {
-			log.Warn().Str("key", key).Msg("key not subscriptble")
-			return nil
-		} else if keyIndex >= len(childList) {
-			log.Warn().Str("key", key).Str("index", fmt.Sprintf("%d", keyIndex)).Msg("key index out of range")
-			return nil
+func (o *OptionValue) Get(path string) *OptionValue {
+	child := o.GetDefault(path, nil)
+	if child == nil {
+		if log.Logger.GetLevel() <= zerolog.DebugLevel {
+			log.Panic().Msgf("optionalvalue: %s get failure", path)
 		}
 
-		child = &childList[keyIndex]
+		log.Warn().Msgf("option: %s not found", path)
 	}
 
-	return child.get(path)
+	return child
 }
 
-func (o *OptionValue) Int() int {
-	if o == nil {
-		log.Warn().Msg("optionvalue is nil returning undefined value")
-		return 0
-	}
+func (o *OptionValue) asMap(targetType reflect.Type, targetVal reflect.Value) bool {
+	var (
+		ok     bool
+		optMap map[string]*OptionValue
+	)
 
-	return o.Value.(int)
-}
-
-func (o *OptionValue) Int64() int64 {
-	if o == nil {
-		log.Warn().Msg("optionvalue is nil returning undefined value")
-		return 0
-	}
-
-	val, ok := o.Value.(int64)
-	if !ok {
-		return int64(o.Value.(int))
-	}
-
-	return val
-}
-
-func (o *OptionValue) String() string {
-	if o == nil {
-		log.Warn().Msg("optionvalue is nil returning undefined value")
-		return ""
-	}
-
-	var val string
-
-	switch v := o.Value.(type) {
-	case string:
-		val = v
-	case *string:
-		val = *v
-	default:
-		val = fmt.Sprintf("%v", o.Value)
-	}
-
-	return val
-}
-
-func (o *OptionValue) Bool() bool {
-	if o == nil {
-		log.Warn().Msg("optionvalue is nil returning undefined value")
+	if optMap, ok = o.Value.(map[string]*OptionValue); !ok {
+		if log.Logger.GetLevel() <= zerolog.DebugLevel {
+			// Usually we want to know about this error, but in production, maybe only a log message
+			log.Panic().Msgf("asMap: optionvalue type: %T not map[string]*OptionValue", o.Value)
+		} else {
+			log.Error().Msgf("asNao: optionvalue type: %T not map[string]*OptionValue", o.Value)
+		}
 		return false
 	}
 
-	var val bool
+	if len(optMap) == 0 {
+		return true
+	}
 
-	switch v := o.Value.(type) {
-	case bool:
-		val = v
-	case *bool:
-		val = *v
+	log.Debug().Msgf("target type: %v", targetType)
+
+	XXXXXXX // TODO THIS IS WHERE YOU ARE UPTO
+
+	//if reflectType.Key().Kind() == reflect.String
+
+	// targetTypeElem := targetType.Elem()
+	// targetValElem := targetVal.Elem()
+
+	return false
+}
+
+func (o *OptionValue) asList(targetType reflect.Type, targetVal reflect.Value) bool {
+	var (
+		ok      bool
+		optList []*OptionValue
+	)
+
+	if optList, ok = o.Value.([]*OptionValue); !ok {
+		if log.Logger.GetLevel() <= zerolog.DebugLevel {
+			// Usually we want to know about this error, but in production, maybe only a log message
+			log.Panic().Msgf("asList: optionvalue type: %T not []*OptionValue", o.Value)
+		} else {
+			log.Error().Msgf("asList: optionvalue type: %T not []*OptionValue", o.Value)
+		}
+		return false
+	}
+
+	if len(optList) == 0 {
+		return true
+	}
+
+	targetTypeElem := targetType.Elem()
+	targetValElem := targetVal.Elem()
+
+	if targetValElem.Cap() < len(optList) {
+		newTargetList := reflect.MakeSlice(reflect.SliceOf(targetTypeElem.Elem()), len(optList), len(optList))
+		targetVal.Elem().Set(newTargetList)
+	}
+
+	for i, opt := range optList {
+		if opt == nil {
+			targetValElem.Index(i).Set(reflect.Zero(targetTypeElem.Elem()))
+			continue
+		}
+
+		if !reflect.TypeOf(opt.Value).AssignableTo(targetTypeElem.Elem()) {
+			targetVal.Elem().Set(reflect.Zero(targetTypeElem))
+			if log.Logger.GetLevel() <= zerolog.DebugLevel {
+				// Usually we want to know about this error, but in production, maybe only a log message
+				log.Panic().Msgf("asList: optionvalue: %d: type: %T not %v", i, opt.Value, targetTypeElem.Elem())
+			} else {
+				log.Error().Msgf("asList: optionvalue: %d: type: %T not %v", i, o.Value, targetTypeElem.Elem())
+			}
+
+			return false
+		}
+
+		targetValElem.Index(i).Set(reflect.ValueOf(opt.Value))
+	}
+
+	return true
+}
+
+func (o *OptionValue) As(target interface{}) bool {
+	if target == nil {
+		if log.Logger.GetLevel() <= zerolog.DebugLevel {
+			// Usually we want to know about this error, but in production, maybe only a log message
+			log.Panic().Msgf("as: target cannot be nil")
+		} else {
+			log.Error().Msgf("as: target cannot be nil")
+		}
+
+		return false
+	}
+
+	targetVal := reflect.ValueOf(target)
+	targetType := targetVal.Type()
+	if targetType.Kind() != reflect.Ptr || targetVal.IsNil() {
+		if log.Logger.GetLevel() <= zerolog.DebugLevel {
+			// Usually we want to know about this error, but in production, maybe only a log message
+			log.Panic().Msgf("as: target must be a non-nil pointer")
+		} else {
+			log.Error().Msgf("as: target must be a non-nil pointer")
+		}
+
+		return false
+	}
+
+	if o.Value == nil {
+		targetVal.Elem().Set(reflect.Zero(targetVal.Elem().Type()))
+		return true
+	}
+
+	targetTypeElem := targetType.Elem()
+	switch targetTypeElem.Kind() {
+	case reflect.Array, reflect.Slice:
+		return o.asList(targetType, targetVal)
+	case reflect.Map:
+		return o.asMap(targetType, targetVal)
 	default:
-		val = false
+		srcVal := reflect.ValueOf(o.Value)
+		targetValElem := targetVal.Elem()
+
+		if reflect.TypeOf(o.Value).AssignableTo(targetTypeElem) {
+			targetValElem.Set(srcVal)
+			return true
+		}
+
+		if x, ok := o.Value.(interface{ As(interface{}) bool }); ok && x.As(target) {
+			return true
+		}
+
 	}
 
-	return val
+	if log.Logger.GetLevel() <= zerolog.DebugLevel {
+		// Usually we want to know about this error, but in production, maybe only a log message
+		log.Panic().Msgf("failure to assign src type: %T to target type: %s", o.Value, reflect.Indirect(targetVal).Kind())
+	} else {
+		log.Error().Msgf("failure to assign src type: %T to target type: %s", o.Value, reflect.Indirect(targetVal).Kind())
+	}
+
+	return false
 }
 
-func (o *OptionValue) Duration() time.Duration {
-	if o == nil {
-		log.Warn().Msg("optionvalue is nil returning undefined value")
-		return 0
+func (o *OptionValue) String() string {
+	if x, ok := o.Value.(interface{ String() string }); ok {
+		return x.String()
 	}
 
-	if val, ok := o.Value.(time.Duration); ok {
-		return val
-	}
-
-	if val, ok := o.Value.(string); ok {
-		if dur, err := time.ParseDuration(val); err == nil {
-			return dur
-		}
-
-		return 0
-	}
-
-	if val, ok := o.Value.(int); ok {
-		return time.Duration(val)
-	}
-
-	if val, ok := o.Value.(int64); ok {
-		return time.Duration(val)
-	}
-
-	return 0
+	return fmt.Sprintf("%v", o.Value)
 }
 
-func (o *OptionValue) List() []OptionValue {
-	// We should still be able to cast a nil object to an empty list
-	if o == nil {
-		return []OptionValue{}
-	}
-
-	if o.Value == nil {
-		return []OptionValue{}
-	}
-
-	if val, ok := o.Value.([]OptionValue); ok {
-		return val
-	}
-
-	if val, ok := o.Value.(map[string]*OptionValue); ok {
-		if len(val) == 0 {
-			return []OptionValue{}
-		}
-
-		keys := make([]string, len(val))
-		i := 0
-		for key := range val {
-			keys[i] = key
-			i += 1
-		}
-
-		if _, err := strconv.Atoi(keys[0]); err == nil {
-			sort.Slice(keys, func(i, j int) bool {
-				ii, err := strconv.Atoi(keys[i])
-				if err != nil {
-					return false
-				}
-
-				ji, err := strconv.Atoi(keys[j])
-				if err != nil {
-					return false
-				}
-
-				return ii < ji
-			})
-		}
-
-		values := make([]OptionValue, len(val))
-		for i, key := range keys {
-			values[i] = *val[key]
-		}
-		return values
-	}
-
-	return []OptionValue{*o} // Return self as a 1 item list
-}
-
-func (o *OptionValue) StringList() []string {
-	if o == nil || o.Value == nil {
-		return []string{}
-	}
-
-	optList := o.List()
-	vals := make([]string, len(optList))
-	for i, opt := range optList {
-		vals[i] = opt.String()
-	}
-
-	return vals
-}
-
-func (o *OptionValue) IntList() []int {
-	if o == nil || o.Value == nil {
-		return []int{}
-	}
-
-	optList := o.List()
-	vals := make([]int, len(optList))
-	for i, opt := range optList {
-		vals[i] = opt.Int()
-	}
-
-	return vals
-}
-
-func (o *OptionValue) Map() map[string]*OptionValue {
-	// We should still be able to cast a nil object to an empty map
-	if o == nil {
-		return map[string]*OptionValue{}
-	}
-
-	if o.Value == nil {
-		return map[string]*OptionValue{}
-	}
-
-	if val, ok := o.Value.(map[string]*OptionValue); ok {
-		return val
-	}
-
-	if val, ok := o.Value.([]OptionValue); ok {
-		if len(val) == 0 {
-			return map[string]*OptionValue{}
-		}
-
-		values := make(map[string]*OptionValue, len(val))
-		for i := 0; i < len(val); i++ {
-			key := fmt.Sprintf("item%d", i)
-			values[key] = &val[i]
-		}
-
-		return values
-	}
-
-	return map[string]*OptionValue{
-		"default": o,
-	} // Return self as a 1 item map with key "default"
+func (o *OptionValue) Bool() bool {
+	var res bool
+	o.As(&res)
+	return res
 }

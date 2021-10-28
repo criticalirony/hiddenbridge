@@ -194,8 +194,9 @@ func main() {
 	opts.Set("cli.out.nosave", flagSet.Bool("no-save", false, "Don't save the cert and keys, just dump to stdout"))
 
 	flagSet.Func("n", "Subect Alt Name (host). Can be used multiple times.", func(s string) error {
-		valList := opts.GetDefault("cli.host", nil).List()
-		valList = append(valList, options.OptionValue{Value: s}) // Can be a list, provide multiple -h
+		var valList []string
+		opts.GetDefault("cli.host", nil).As(&valList)
+		valList = append(valList, s) // Can be a list, provide multiple -h
 		return opts.Set("cli.host", valList)
 	})
 
@@ -207,7 +208,8 @@ func main() {
 
 	log.Info().Msg("signcert: creating signed certificates the easy way")
 
-	hostList := opts.GetDefault("cli.host", nil).StringList()
+	var hostList []string
+	opts.GetDefault("cli.host", nil).As(&hostList)
 	if len(hostList) == 0 {
 		log.Panic().Msgf("At least one \"-n\" <alt name (host)> must be provided")
 	}

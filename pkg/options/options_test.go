@@ -1,12 +1,12 @@
 package options
 
 import (
+	"errors"
 	"flag"
+	"fmt"
 	"hiddenbridge/pkg/utils"
 	"os"
-	"sort"
 	"testing"
-	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -28,43 +28,93 @@ func SetupLogging(level string) {
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, NoColor: noColor}).Level(logLevel).With().Timestamp().Logger().With().Caller().Logger()
 }
 
-func TestOptionSimple(t *testing.T) {
-	o1 := &OptionValue{Value: 5}
-
-	o2 := &OptionValue{}
-	err := o2.Set("", 5)
+func TestOptionSimpleSet(t *testing.T) {
+	o := &OptionValue{}
+	err := o.Set("", 5)
 	require.Nil(t, err)
 
-	require.Equal(t, o1.Value, o2.Get("").Value)
-	require.Equal(t, o1.Get("").Value, o2.Value)
+	o = &OptionValue{}
+	err = o.Set("", 5, 6)
+	require.Nil(t, err)
 
-	require.Equal(t, o1.Int(), o2.Get("").Int())
-	require.Equal(t, o1.Get("").Int(), o2.Int())
+	o = &OptionValue{}
+	err = o.Set("", 5, "not an int", 7)
+	require.NotNil(t, err)
 
-	require.Equal(t, 5, o1.Int())
-	require.Equal(t, int64(5), o1.Int64())
-	require.Equal(t, "5", o1.String())
+	err = errors.Unwrap(err)
+	require.NotNil(t, err)
+	require.True(t, errors.Is(err, ErrInvalidArgs))
 }
 
-func TestOptionSimpleDuration(t *testing.T) {
-	o1 := &OptionValue{}
-	o1.Set("", 5*time.Second)
-	require.Equal(t, 5*time.Second, o1.Duration())
+func TestOptionSimpleGet(t *testing.T) {
+	o := &OptionValue{Value: 5}
 
-	o2 := &OptionValue{}
-	err := o2.Set("", "5s")
-	require.Nil(t, err)
-	require.Equal(t, 5*time.Second, o2.Duration())
+	o2 := o.Get("")
+	require.NotNil(t, o2)
+	require.Equal(t, "5", fmt.Sprintf("%v", o2.Value))
 
-	o3 := &OptionValue{}
-	err = o3.Set("", 150000000000)
+	var res int
+	ok := o2.As(&res) // This is a fancy get
+	require.True(t, ok)
+	require.Equal(t, 5, res)
+
+	o = &OptionValue{}
+	err := o.Set("", []string{"hello", "world"})
 	require.Nil(t, err)
-	require.Equal(t, 150*time.Second, o3.Duration())
+
+	o2 = o.Get("0")
+	require.NotNil(t, o2)
+	require.Equal(t, "hello", fmt.Sprintf("%v", o2.Value))
+
+	res2 := ""
+	ok = o.GetDefault("1", nil).As(&res2)
+	require.True(t, ok)
+	require.Equal(t, "world", res2)
+}
+
+func TestOptionSimple(t *testing.T) {
+	var res int
+
+	o := &OptionValue{}
+	o.Set("", 5)
+
+	res, ok := o.Value.(int)
+	require.True(t, ok)
+	require.Equal(t, 5, res)
+
+	res = 0
+
+	ok = o.Get("").As(&res)
+	require.True(t, ok)
+	require.Equal(t, 5, res)
 }
 
 func TestOptionSimpleList(t *testing.T) {
+	// Test setting an array into the option value
+	var inp [2]string
+	inp[0] = "hello"
+	inp[1] = "world"
+
+	o := &OptionValue{}
+	err := o.Set("", inp)
+	require.Nil(t, err)
+
+	// Test setting a slice into the option value
+	inp2 := []string{"goodbye", "cruel", "world"}
+	o = &OptionValue{}
+	err = o.Set("", inp2)
+	require.Nil(t, err)
+
+	// Test getting a list for a not found key returns an empty list
+	var notFoundList []string
+	ok := o.GetDefault("ips.external", nil).As(&notFoundList)
+	require.True(t, ok)
+	require.Equal(t, "[]", fmt.Sprintf("%v", notFoundList))
+}
+
+func TestOptionSimpleList2(t *testing.T) {
 	o1 := &OptionValue{
-		Value: []OptionValue{
+		Value: []*OptionValue{
 			{Value: 1},
 			{Value: 2},
 			{Value: 3},
@@ -74,340 +124,169 @@ func TestOptionSimpleList(t *testing.T) {
 	}
 
 	expected := []int{1, 2, 3, 4, 5}
-	actual := make([]int, len(o1.List()))
-	for i, item := range o1.List() {
-		actual[i] = item.Int()
-	}
-
+	actual := []int{}
+	ok := o1.As(&actual)
+	require.True(t, ok)
 	require.Equal(t, expected, actual)
 
 	o2 := &OptionValue{
-		Value: []OptionValue{},
+		Value: []*OptionValue{},
 	}
 
+	actual = []int{}
 	expected = []int{}
-	actual = make([]int, len(o2.List()))
-	for i, item := range o2.List() {
-		actual[i] = item.Int()
-	}
-
+	ok = o2.As(&actual)
+	require.True(t, ok)
 	require.Equal(t, expected, actual)
 
 	o3 := &OptionValue{
 		Value: 5,
 	}
 
-	expected = []int{5}
-	actual = make([]int, len(o3.List()))
-	for i, item := range o3.List() {
-		actual[i] = item.Int()
-	}
-
-	require.Equal(t, expected, actual)
-
-	o4 := &OptionValue{
-		[]OptionValue{
-			{1},
-			{2},
-			{3},
-			{4},
-			{5},
-		},
-	}
-
-	expectedMap := map[string]int{
-		"item0": 1,
-		"item1": 2,
-		"item2": 3,
-		"item3": 4,
-		"item4": 5,
-	}
-
-	actualMap := make(map[string]int, len(o4.Map()))
-	for key, value := range o4.Map() {
-		actualMap[key] = value.Int()
-	}
-
-	require.Equal(t, expectedMap, actualMap)
+	actual2 := 0
+	expected2 := 5
+	ok = o3.As(&actual2)
+	require.True(t, ok)
+	require.Equal(t, expected2, actual2)
 }
 
 func TestOptionSimpleMap(t *testing.T) {
-	o1 := &OptionValue{
-		map[string]*OptionValue{
-			"item0": {1},
-			"item1": {2},
-			"item2": {3},
-			"item3": {4},
-			"item4": {5},
-		},
-	}
+	// Test setting an array into the option value
+	inp := map[string]string{}
+	inp["key1"] = "hello"
+	inp["key2"] = "world"
 
-	expected := map[string]int{
-		"item0": 1,
-		"item1": 2,
-		"item2": 3,
-		"item3": 4,
-		"item4": 5,
-	}
+	o := &OptionValue{}
+	err := o.Set("", inp)
+	require.Nil(t, err)
 
-	actual := make(map[string]int, len(o1.Map()))
-	for key, value := range o1.Map() {
-		actual[key] = value.Int()
-	}
+	o2 := o.GetDefault("key2", nil)
+	require.NotNil(t, o2)
+	require.Equal(t, "world", fmt.Sprintf("%v", o2.Value))
 
-	require.Equal(t, expected, actual)
+	// Test map with different paths. Make sure they don't conflict with each other
+	o = &OptionValue{}
+	err = o.Set("path.subpath1.subpath1", 10)
+	require.Nil(t, err)
+	err = o.Set("path.subpath2.subpath1", 20)
+	require.Nil(t, err)
+	err = o.Set("path.subpath2.subpath2", 30)
+	require.Nil(t, err)
 
-	expectedList := []int{1, 2, 3, 4, 5}
-	actualList := make([]int, len(o1.List()))
-	for i, value := range o1.List() {
-		actualList[i] = value.Int()
-	}
+	o2 = o.GetDefault("path.subpath2.subpath1", nil)
+	require.NotNil(t, o2)
+	require.Equal(t, "20", fmt.Sprintf("%v", o2.Value))
 
-	sort.Slice(actualList, func(i, j int) bool {
-		return actualList[i] < actualList[j]
-	})
+	o2 = o.GetDefault("path.subpath2.subpath2", nil)
+	require.NotNil(t, o2)
+	require.Equal(t, "30", fmt.Sprintf("%v", o2.Value))
 
-	require.Equal(t, expectedList, actualList)
-
-	o2 := &OptionValue{
-		Value: map[string]*OptionValue{
-			"10": {Value: 10},
-			"5":  {Value: 5},
-			"7":  {Value: 7},
-			"2":  {Value: 2},
-			"3":  {Value: 3},
-		},
-	}
-
-	expectedList = []int{2, 3, 5, 7, 10}
-	actualList = make([]int, len(o2.List()))
-	for i, value := range o2.List() {
-		actualList[i] = value.Int()
-	}
-
-	require.Equal(t, expectedList, actualList)
-
-	o3 := &OptionValue{
-		Value: map[string]*OptionValue{},
-	}
-
-	expected = map[string]int{}
-	actual = make(map[string]int, len(o3.Map()))
-	for key, value := range o3.Map() {
-		actual[key] = value.Int()
-	}
-
-	require.Equal(t, expected, actual)
-
-	o4 := &OptionValue{
-		Value: 5,
-	}
-
-	expected = map[string]int{"default": 5}
-	actual = make(map[string]int, len(o4.Map()))
-	for key, value := range o4.Map() {
-		actual[key] = value.Int()
-	}
-
-	require.Equal(t, expected, actual)
+	// Test getting a map for a not found key returns an empty list
+	var notFoundVal map[string]string
+	ok := o.GetDefault("ips.external", nil).As(&notFoundVal)
+	require.True(t, ok)
+	require.Equal(t, "map[]", fmt.Sprintf("%v", notFoundVal))
 }
 
-func TestOptionSimpleSet(t *testing.T) {
-	o1 := &OptionValue{}
-	err := o1.Set("top", 10)
-	require.Nil(t, err)
+func TestOptionListAppend(t *testing.T) {
+	// var valList []string
+	// opts.GetDefault("cli.host", nil).As(&valList)
+	// valList = append(valList, s) // Can be a list, provide multiple -h
 
-	expected := &OptionValue{
-		map[string]*OptionValue{
-			"top": {10},
-		},
-	}
-
-	require.Equal(t, expected, o1)
-
-	o1 = &OptionValue{}
-	err = o1.Set("root[5]", 5)
-	require.Nil(t, err)
-
-	expected = &OptionValue{
-		map[string]*OptionValue{
-			"root": {
-				[]OptionValue{
-					{nil},
-					{nil},
-					{nil},
-					{nil},
-					{nil},
-					{5},
-				},
-			},
-		},
-	}
-
-	require.Equal(t, expected, o1)
-
-	err = o1.Set("root[2]", 2)
-	require.Nil(t, err)
-
-	expected = &OptionValue{
-		map[string]*OptionValue{
-			"root": {
-				[]OptionValue{
-					{nil},
-					{nil},
-					{2},
-					{nil},
-					{nil},
-					{5},
-				},
-			},
-		},
-	}
-
-	require.Equal(t, expected, o1)
-
-	o1 = &OptionValue{}
-	err = o1.Set("root.foo.bar", 5)
-	require.Nil(t, err)
-
-	expected = &OptionValue{
-		map[string]*OptionValue{
-			"root": {
-				map[string]*OptionValue{
-					"foo": {
-						map[string]*OptionValue{
-							"bar": {5},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	require.Equal(t, expected, o1)
-
-	o1 = &OptionValue{}
-	err = o1.Set("root.foo[2].bar", 5)
-	require.Nil(t, err)
-
-	expected = &OptionValue{
-		map[string]*OptionValue{
-			"root": {
-				map[string]*OptionValue{
-					"foo": {
-						[]OptionValue{
-							{nil},
-							{nil},
-							{
-								map[string]*OptionValue{
-									"bar": {5},
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	require.Equal(t, expected, o1)
+	// 1. Append to a non found list - implicit creation
+	// 2. Append to existing list
 }
 
-func TestSetTypeReassign(t *testing.T) {
-	o1 := &OptionValue{}
-	err := o1.Set("root.foo[2].bar", 5)
+func TestOptionAdvancedSetKey(t *testing.T) {
+	o := &OptionValue{}
+	err := o.Set("root.subroot[7][subkey.subsubkey].leaf", 10)
 	require.Nil(t, err)
+	require.NotNil(t, o.Value)
 
-	err = o1.Set("root.foo.bar", "value")
-	require.EqualError(t, err, "key: bar existing type: []options.OptionValue is immutable and can not be reassigned")
-
-	o1 = &OptionValue{}
-	err = o1.Set("root.foo", 10)
-	require.Nil(t, err)
-
-	err = o1.Set("root.foo.bar", "value")
-	require.EqualError(t, err, "key: bar existing type: int is immutable and can not be reassigned")
-
-	o1 = &OptionValue{}
-	err = o1.Set("root.foo", nil)
-	require.Nil(t, err)
-
-	err = o1.Set("root.foo.bar", "value")
-	require.Nil(t, err)
-
-	o1 = &OptionValue{}
-	err = o1.Set("root.foo.bar", "value")
-	require.Nil(t, err)
-
-	// Try and change "bar" to a new type - should fail
-	err = o1.Set("root.foo.bar.new", "new value")
-	require.EqualError(t, err, "key: new existing type: string is immutable and can not be reassigned")
-
-	// Delete the value for "bar" so now it doesn't have any type
-	err = o1.Set("root.foo.bar", nil)
-	require.Nil(t, err)
-
-	// We can now change "bar" to be a parent key to a sub key instead of a leaf key to a string
-	err = o1.Set("root.foo.bar.new", "new value")
-	require.Nil(t, err)
-
-	// Leaf keys' types are mutable. Set "bar" to type string
-	o1 = &OptionValue{}
-	err = o1.Set("root.foo.bar", "value")
-	require.Nil(t, err)
-
-	// Without any deletion now set "bar" to type int
-	err = o1.Set("root.foo.bar", 5)
-	require.Nil(t, err)
+	o2 := o.GetDefault("root.subroot[7][subkey.subsubkey].leaf", nil)
+	require.NotNil(t, o2)
+	require.Equal(t, "10", fmt.Sprintf("%v", o2.Value))
 }
 
-func TestOptionSimpleGet(t *testing.T) {
-	o1 := &OptionValue{}
-	err := o1.Set("", "value")
-	require.Nil(t, err)
-	val := o1.Get("")
-	require.Equal(t, &OptionValue{"value"}, val)
-	require.Equal(t, "value", val.String())
-
-	err = o1.Set("", 10)
-	require.Nil(t, err)
-	val = o1.Get("")
-	require.Equal(t, &OptionValue{10}, val)
-	require.Equal(t, 10, val.Int())
-
-	o1 = &OptionValue{}
-	err = o1.Set("root.foo.bar", "value")
+func TestOptionSimpleDefault(t *testing.T) {
+	o := &OptionValue{}
+	err := o.Set("", []int{2, 4, 6, 8})
 	require.Nil(t, err)
 
-	val = o1.Get("XXXXXXX.will.not.be.found")
-	require.Nil(t, val)
+	missingVal := o.GetDefault("100", 99)
+	require.NotNil(t, missingVal)
+	require.Equal(t, "99", fmt.Sprintf("%v", missingVal.Value))
 
-	val = o1.Get("root.foo.bar")
-	require.Equal(t, &OptionValue{"value"}, val)
+	var res int
+	missingVal.As(&res)
+	require.Equal(t, 99, res)
+}
 
-	o1 = &OptionValue{}
-	err = o1.Set("root.foo[2].bar", "VALUE OK")
+func TestOptionAdvancedSetList(t *testing.T) {
+	o := &OptionValue{}
+	err := o.Set("root.subroot", []string{"value1", "value2"})
+	require.Nil(t, err)
+	require.NotNil(t, o.Value)
+
+	o = &OptionValue{}
+	err = o.Set("root.subroot", "value3", "value4")
+	require.Nil(t, err)
+	require.NotNil(t, o.Value)
+
+	o = &OptionValue{}
+	err = o.Set("root.subroot", []string{"value1", "value2"}, []string{"value3", "value4"})
+	require.Nil(t, err)
+	require.NotNil(t, o.Value)
+	require.Equal(t, "map[root:map[subroot:[[value1 value2] [value3 value4]]]]", o.String())
+}
+
+func TestOptionAdvancedGetList(t *testing.T) {
+	var value []string
+
+	o := &OptionValue{}
+	err := o.Set("", []string{"value1", "value2"})
 	require.Nil(t, err)
 
-	val = o1.Get("root.foo[2].bar")
-	require.Equal(t, "VALUE OK", val.String())
+	ok := o.As(&value)
+	require.True(t, ok)
+	require.Equal(t, "[value1 value2]", fmt.Sprintf("%v", value))
 
-	val = o1.Get("root.foo.next.bar")
-	require.Nil(t, val)
+	var value2 []int
 
-	o1 = &OptionValue{}
-	err = o1.Set("root.foo.bar", "VALUE OK")
+	o = &OptionValue{}
+	err = o.Set("", []int{2, 4, 6, 8})
+	require.Nil(t, err)
+	err = o.Set("2", 10) // Change element at index 2 from 6 to 10
+	require.Nil(t, err)
+	err = o.Set("5", 20) // Add an element to the list, past the end of the list
 	require.Nil(t, err)
 
-	val = o1.Get("root.foo[2].bar")
-	require.Nil(t, val)
+	ok = o.As(&value2)
+	require.True(t, ok)
 
-	o1 = &OptionValue{}
-	err = o1.Set("root.foo[2].bar", "VALUE OK")
+	// Note the 0 at index 4 - highlights a dummy value filling the empty space when element value 20 was added
+	// the value 0 is not really there, if you get the real value, you'll get nil
+	require.Equal(t, "[2 4 10 8 0 20]", fmt.Sprintf("%v", value2))
+
+	missingVal := o.GetDefault("4", 99)
+	// Shows entry at index 4 was really created but its value set to nil
+	// if this value were really not there the missing value would be 99
+	require.Nil(t, missingVal)
+}
+
+func TestOptionAdvancedSetMap(t *testing.T) {
+	o := &OptionValue{}
+	err := o.Set("root.subroot", map[string]int{"key1": 5, "key2": 10})
 	require.Nil(t, err)
+	require.NotNil(t, o.Value)
 
-	val = o1.Get("root.foo[10].bar")
-	require.Nil(t, val)
+	o2 := o.GetDefault("root.subroot[key2]", nil)
+	require.NotNil(t, o2)
+	require.Equal(t, "10", fmt.Sprintf("%v", o2.Value))
+
+	o2 = o.GetDefault("root.subroot.key1", nil)
+	require.NotNil(t, o2)
+	require.Equal(t, "5", fmt.Sprintf("%v", o2.Value))
 }
 
 func TestCommandLineArgs(t *testing.T) {
@@ -441,314 +320,158 @@ func TestCommandLineArgsAppend(t *testing.T) {
 	o1.Set("cli.arg", []string{})
 
 	flagSet.Func("arg", "Will append to a list", func(s string) error {
-		valList := o1.Get("cli.arg").List()
-		valList = append(valList, OptionValue{s})
+		valList := []string{}
+		ok := o1.Get("cli.arg").As(&valList)
+		require.True(t, ok)
+		valList = append(valList, s)
 		return o1.Set("cli.arg", valList)
 	})
 
 	err := flagSet.Parse([]string{"-arg", "arg1", "-arg", "arg2", "-arg", "arg3"})
 	require.Nil(t, err)
 
-	valList := o1.Get("cli.arg").List()
-	require.Equal(t, []OptionValue{{"arg1"}, {"arg2"}, {"arg3"}}, valList)
+	valList := []string{}
+	ok := o1.Get("cli.arg").As(&valList)
+	require.True(t, ok)
+	require.Equal(t, "[arg1 arg2 arg3]", fmt.Sprintf("%v", valList))
 }
 
-func TestOptionParseOptionValueAsValue(t *testing.T) {
-	input := &OptionValue{
-		map[string]*OptionValue{
-			"foo": {
-				map[string]*OptionValue{
-					"bar": {5},
-				},
-			},
-		},
-	}
+// func TestOptionParseYAML(t *testing.T) {
+// 	input := []byte(`
+// ---
+// root: 5
+// `)
 
-	expected := &OptionValue{
-		map[string]*OptionValue{
-			"root": {
-				map[string]*OptionValue{
-					"foo": {
-						map[string]*OptionValue{
-							"bar": {5},
-						},
-					},
-				},
-			},
-		},
-	}
+// 	var yamlInput interface{}
+// 	err := yaml.Unmarshal(input, &yamlInput)
+// 	require.Nil(t, err)
 
-	o1 := &OptionValue{}
-	err := o1.Set("root", input.Value)
-	require.Nil(t, err)
-	require.Equal(t, expected, o1)
+// 	o1 := &OptionValue{}
+// 	err = o1.Set("", yamlInput)
+// 	require.Nil(t, err)
 
-	input = &OptionValue{
-		[]OptionValue{
-			{5},
-			{6},
-			{7},
-			{8},
-		},
-	}
+// 	val := o1.Get("root")
+// 	require.NotNil(t, val)
+// 	require.Equal(t, 5, val.Int())
 
-	expected = &OptionValue{
-		map[string]*OptionValue{
-			"root": {
-				[]OptionValue{
-					{5},
-					{6},
-					{7},
-					{8},
-				},
-			},
-		},
-	}
+// 	input = []byte(`
+// ---
+// root:
+// `)
 
-	o1 = &OptionValue{}
-	err = o1.Set("root", input.Value)
-	require.Nil(t, err)
-	require.Equal(t, expected, o1)
+// 	err = yaml.Unmarshal(input, &yamlInput)
+// 	require.Nil(t, err)
 
-	// Adding a ptr OptionValue
-	input = &OptionValue{5}
-	expected = &OptionValue{
-		map[string]*OptionValue{
-			"root": {5},
-		},
-	}
+// 	o1 = &OptionValue{}
+// 	err = o1.Set("", yamlInput)
+// 	require.Nil(t, err)
 
-	o1 = &OptionValue{}
-	err = o1.Set("root", input)
-	require.Nil(t, err)
-	require.Equal(t, expected, o1)
+// 	val = o1.Get("root")
+// 	require.NotNil(t, val)
+// 	require.Nil(t, val.Value)
 
-	// Adding a struct OptionValue
-	input2 := OptionValue{5}
-	expected = &OptionValue{
-		map[string]*OptionValue{
-			"root": {5},
-		},
-	}
+// 	input = []byte(`
+// ---
+// root: ""
+// `)
 
-	o2 := &OptionValue{}
-	err = o2.Set("root", input2)
-	require.Nil(t, err)
-	require.Equal(t, expected, o2)
-}
+// 	err = yaml.Unmarshal(input, &yamlInput)
+// 	require.Nil(t, err)
 
-func TestOptionParseInterfaceValue(t *testing.T) {
-	// Test generic maps
-	input := map[string]int{
-		"key1": 5,
-		"key2": 6,
-		"key3": 7,
-		"key4": 8,
-	}
+// 	o1 = &OptionValue{}
+// 	err = o1.Set("", yamlInput)
+// 	require.Nil(t, err)
 
-	expected := &OptionValue{
-		map[string]*OptionValue{
-			"root": {
-				map[string]*OptionValue{
-					"key1": {5},
-					"key2": {6},
-					"key3": {7},
-					"key4": {8},
-				},
-			},
-		},
-	}
+// 	val = o1.Get("root")
+// 	require.NotNil(t, val)
+// 	require.Equal(t, "", val.String())
 
-	o1 := &OptionValue{}
-	err := o1.Set("root", input)
-	require.Nil(t, err)
-	require.Equal(t, expected, o1)
+// 	input = []byte(`
+// ---
+// root:
+//   - item1
+//   - item2
+//   - item3
+// `)
 
-	val := o1.Get("root.key2")
-	require.NotNil(t, val)
-	require.Equal(t, 6, val.Int())
+// 	err = yaml.Unmarshal(input, &yamlInput)
+// 	require.Nil(t, err)
 
-	val = o1.Get("root[key2]")
-	require.NotNil(t, val)
-	require.Equal(t, 6, val.Int())
+// 	o1 = &OptionValue{}
+// 	err = o1.Set("", yamlInput)
+// 	require.Nil(t, err)
 
-	// Test generic lists
-	input2 := []int{10, 1, 8, 3}
-	expected = &OptionValue{
-		map[string]*OptionValue{
-			"root": {
-				[]OptionValue{
-					{10},
-					{1},
-					{8},
-					{3},
-				},
-			},
-		},
-	}
+// 	val2 := o1.Get("root").List()
+// 	require.NotNil(t, val2)
+// 	require.Len(t, val2, 3)
+// 	require.Equal(t, []OptionValue{{"item1"}, {"item2"}, {"item3"}}, val2)
 
-	o2 := &OptionValue{}
-	err = o2.Set("root", input2)
-	require.Nil(t, err)
-	require.Equal(t, expected, o2)
+// 	input = []byte(`
+// ---
+// root:
+//   key1:
+//   key2:
+//   key3:
+// `)
 
-	val = o2.Get("root[2]")
-	require.NotNil(t, val)
-	require.Equal(t, 8, val.Int())
-}
+// 	err = yaml.Unmarshal(input, &yamlInput)
+// 	require.Nil(t, err)
 
-func TestOptionParseYAML(t *testing.T) {
-	input := []byte(`
----
-root: 5
-`)
+// 	o1 = &OptionValue{}
+// 	err = o1.Set("", yamlInput)
+// 	require.Nil(t, err)
 
-	var yamlInput interface{}
-	err := yaml.Unmarshal(input, &yamlInput)
-	require.Nil(t, err)
+// 	val3 := o1.Get("root").Map()
+// 	require.NotNil(t, val3)
+// 	require.Len(t, val3, 3)
+// 	require.Equal(t, map[string]*OptionValue{"key1": {nil}, "key2": {nil}, "key3": {nil}}, val3)
 
-	o1 := &OptionValue{}
-	err = o1.Set("", yamlInput)
-	require.Nil(t, err)
+// 	input = []byte(`
+// ---
+// root:
+//   key1: "value1"
+//   key2: "value2"
+//   key3: "value3"
+// `)
 
-	val := o1.Get("root")
-	require.NotNil(t, val)
-	require.Equal(t, 5, val.Int())
+// 	err = yaml.Unmarshal(input, &yamlInput)
+// 	require.Nil(t, err)
 
-	input = []byte(`
----
-root:
-`)
+// 	o1 = &OptionValue{}
+// 	err = o1.Set("", yamlInput)
+// 	require.Nil(t, err)
 
-	err = yaml.Unmarshal(input, &yamlInput)
-	require.Nil(t, err)
+// 	val3 = o1.Get("root").Map()
+// 	require.NotNil(t, val3)
+// 	require.Len(t, val3, 3)
+// 	require.Equal(t, map[string]*OptionValue{"key1": {"value1"}, "key2": {"value2"}, "key3": {"value3"}}, val3)
 
-	o1 = &OptionValue{}
-	err = o1.Set("", yamlInput)
-	require.Nil(t, err)
+// 	input = []byte(`
+// ---
+// root:
+//   key2:
+//     - "listItem1"
+//     - "listItem2"
+//   key1:
+//     - "listItem3"
+//     - "listItem4"
+//   key3:
+//     key4:
+//       - "listItem5"
+//       - "listItem6"
+// `)
 
-	val = o1.Get("root")
-	require.NotNil(t, val)
-	require.Nil(t, val.Value)
+// 	err = yaml.Unmarshal(input, &yamlInput)
+// 	require.Nil(t, err)
 
-	input = []byte(`
----
-root: ""
-`)
+// 	o1 = &OptionValue{}
+// 	err = o1.Set("", yamlInput)
+// 	require.Nil(t, err)
 
-	err = yaml.Unmarshal(input, &yamlInput)
-	require.Nil(t, err)
-
-	o1 = &OptionValue{}
-	err = o1.Set("", yamlInput)
-	require.Nil(t, err)
-
-	val = o1.Get("root")
-	require.NotNil(t, val)
-	require.Equal(t, "", val.String())
-
-	input = []byte(`
----
-root:
-  - item1
-  - item2
-  - item3
-`)
-
-	err = yaml.Unmarshal(input, &yamlInput)
-	require.Nil(t, err)
-
-	o1 = &OptionValue{}
-	err = o1.Set("", yamlInput)
-	require.Nil(t, err)
-
-	val2 := o1.Get("root").List()
-	require.NotNil(t, val2)
-	require.Len(t, val2, 3)
-	require.Equal(t, []OptionValue{{"item1"}, {"item2"}, {"item3"}}, val2)
-
-	input = []byte(`
----
-root:
-  key1:
-  key2:
-  key3:
-`)
-
-	err = yaml.Unmarshal(input, &yamlInput)
-	require.Nil(t, err)
-
-	o1 = &OptionValue{}
-	err = o1.Set("", yamlInput)
-	require.Nil(t, err)
-
-	val3 := o1.Get("root").Map()
-	require.NotNil(t, val3)
-	require.Len(t, val3, 3)
-	require.Equal(t, map[string]*OptionValue{"key1": {nil}, "key2": {nil}, "key3": {nil}}, val3)
-
-	input = []byte(`
----
-root:
-  key1: "value1"
-  key2: "value2"
-  key3: "value3"
-`)
-
-	err = yaml.Unmarshal(input, &yamlInput)
-	require.Nil(t, err)
-
-	o1 = &OptionValue{}
-	err = o1.Set("", yamlInput)
-	require.Nil(t, err)
-
-	val3 = o1.Get("root").Map()
-	require.NotNil(t, val3)
-	require.Len(t, val3, 3)
-	require.Equal(t, map[string]*OptionValue{"key1": {"value1"}, "key2": {"value2"}, "key3": {"value3"}}, val3)
-
-	input = []byte(`
----
-root:
-  key2:
-    - "listItem1"
-    - "listItem2"
-  key1:
-    - "listItem3"
-    - "listItem4"
-  key3:
-    key4:
-      - "listItem5"
-      - "listItem6"
-`)
-
-	err = yaml.Unmarshal(input, &yamlInput)
-	require.Nil(t, err)
-
-	o1 = &OptionValue{}
-	err = o1.Set("", yamlInput)
-	require.Nil(t, err)
-
-	val = o1.Get("root")
-	require.NotNil(t, val)
-	require.Equal(t, "map[key1:[{listItem3} {listItem4}] key2:[{listItem1} {listItem2}] key3:map[key4:[{listItem5} {listItem6}]]]", val.String())
-}
-
-func TestOptionGetNilList(t *testing.T) {
-	o1 := &OptionValue{}
-
-	res := o1.Get("not.a.valid.key").List()
-	require.NotNil(t, res)
-	require.Equal(t, []OptionValue{}, res)
-}
-
-func TestOptionGetNilMap(t *testing.T) {
-	o1 := &OptionValue{}
-
-	res := o1.Get("not.a.valid.key").Map()
-	require.NotNil(t, res)
-	require.Equal(t, map[string]*OptionValue{}, res)
-}
+// 	val = o1.Get("root")
+// 	require.NotNil(t, val)
+// 	require.Equal(t, "map[key1:[{listItem3} {listItem4}] key2:[{listItem1} {listItem2}] key3:map[key4:[{listItem5} {listItem6}]]]", val.String())
+// }
 
 func TestOptionParseNamespaceFlatConfig(t *testing.T) {
 	var yamlInput interface{}
@@ -762,42 +485,40 @@ goproxy:
     - "keys/goproxy.pem"
   ports.https:
     - 9000
+    - 9090
   ports.http:
-    - 9001`)
+    - 9001
+    - 9091`)
 
 	expected := &OptionValue{
 		map[string]*OptionValue{
 			"goproxy": {
 				map[string]*OptionValue{
 					"hosts": {
-						[]OptionValue{
-							{"proxy.golang.org"},
-						},
+						"proxy.golang.org",
 					},
 					"site": {
 						map[string]*OptionValue{
 							"keys": {
-								[]OptionValue{
-									{"keys/goproxy.key"},
-								},
+								"keys/goproxy.key",
 							},
 							"certs": {
-								[]OptionValue{
-									{"keys/goproxy.pem"},
-								},
+								"keys/goproxy.pem",
 							},
 						},
 					},
 					"ports": {
 						map[string]*OptionValue{
 							"https": {
-								[]OptionValue{
+								[]*OptionValue{
 									{9000},
+									{9090},
 								},
 							},
 							"http": {
-								[]OptionValue{
+								[]*OptionValue{
 									{9001},
+									{9091},
 								},
 							},
 						},
@@ -814,34 +535,4 @@ goproxy:
 	err = o1.Set("", yamlInput)
 	require.Nil(t, err)
 	require.Equal(t, expected, o1)
-}
-
-func TestOptionValFromList(t *testing.T) {
-	// If the option is a list, but only contains a single value, it should be possible
-	// to just retrieve the value as though it were not in a list
-
-	o := &OptionValue{}
-	err := o.Set("", []int{5, 6, 7, 8})
-	require.Nil(t, err)
-
-	val := o.Get("").IntList()[1]
-	require.Equal(t, 6, val)
-
-	o = &OptionValue{}
-	err = o.Set("", 9, 12, 15, 18)
-	require.Nil(t, err)
-
-	val = o.Get("").IntList()[3]
-	require.Equal(t, 18, val)
-
-	o = &OptionValue{}
-	err = o.Set("", 8080)
-	require.Nil(t, err)
-
-	val = o.Get("").IntList()[0]
-	require.Equal(t, 8080, val)
-
-	val = o.Get("").Int()
-	require.Equal(t, 8080, val)
-
 }

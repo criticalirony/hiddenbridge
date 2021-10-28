@@ -51,10 +51,16 @@ func (p *BasePlugin) Name() string {
 func (p *BasePlugin) Init(opts *options.OptionValue) error {
 	p.Opts = opts
 
+	var (
+		certFiles []string
+		keyFiles  []string
+		hosts     []string
+	)
+
 	// Expected config if a plugin wants to host its own certificate
-	certFiles := p.Opts.GetDefault("site.certs", nil).StringList()
-	keyFiles := p.Opts.GetDefault("site.keys", nil).StringList()
-	hosts := p.Opts.Get("hosts").StringList()
+	p.Opts.GetDefault("site.certs", nil).As(&certFiles)
+	p.Opts.GetDefault("site.keys", nil).As(&keyFiles)
+	p.Opts.Get("hosts").As(&hosts)
 
 	if len(hosts) == 0 {
 		return xerrors.Errorf("no configured hosts for plugin")
@@ -66,7 +72,7 @@ func (p *BasePlugin) Init(opts *options.OptionValue) error {
 
 	// Record the set of hosts that this plugin responds to.
 	// This is used because it is possible that we will be called in a chain and will be given another host in the req
-	for _, host := range p.Opts.GetDefault("hosts", nil).StringList() {
+	for _, host := range hosts {
 		p.Hosts[host] = struct{}{}
 	}
 
@@ -100,8 +106,8 @@ func (p *BasePlugin) String() string {
 
 func (p *BasePlugin) Ports(protocol string) []string {
 	key := fmt.Sprintf("ports.%s", protocol)
-	ports := p.Opts.Get(key).StringList()
-
+	var ports []string
+	p.Opts.Get(key).As(&ports)
 	return ports
 }
 

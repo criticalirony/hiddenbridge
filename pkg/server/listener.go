@@ -25,8 +25,9 @@ func (e tlsUpgradeError) Timeout() bool   { return false }
 func (e tlsUpgradeError) Temporary() bool { return true } // This allows the outer server to continue serving requests
 
 type Listener struct {
-	inner               net.Listener
-	HandleRawConnection func(clientConn *net.Conn, hostURL *url.URL) (ok bool, err error)
+	inner net.Listener
+	// HandleProxyConnection func(conn *net.Conn, hostURL *url.URL) (ok bool, err error)
+	HandleRawConnection func(conn *net.Conn, hostURL *url.URL) (ok bool, err error)
 	GetCertificate      func(chi *tls.ClientHelloInfo) (*tls.Certificate, error)
 }
 
@@ -99,10 +100,9 @@ func (l *Listener) GetConnectionHost(conn *net.Conn) (*url.URL, error) {
 func (l *Listener) Accept() (net.Conn, error) {
 
 	var (
-		err         error
-		conn        net.Conn
-		wrappedConn net.Conn
-		hostURL     *url.URL
+		err     error
+		conn    net.Conn
+		hostURL *url.URL
 	)
 
 acceptLoop:
@@ -135,8 +135,27 @@ acceptLoop:
 		goto acceptLoop // Try again
 	}
 
+	// localPort := strconv.Itoa(conn.LocalAddr().(*net.TCPAddr).Port)
+	// if l.HandleProxyConnection != nil {
+	// 	ok, err := l.HandleProxyConnection(&conn, hostURL)
+	// 	if ok && err != nil {
+	// 		// The incoming connection should have been handled, but we received an unexpected error
+	// 		// this is a critical issue and probalby means a bug that needs fixing
+	// 		log.Panic().Err(err).Msg("unexpected error occurred")
+	// 	}
+
+	// 	if err != nil {
+	// 		// We couldn't handle this connection due to an error occurring.
+	// 		// This could be anything; probably due to protocol error or connection instability.
+	// 		// Just bail on this connection and try again
+	// 		log.Error().Err(err).Msgf("failure to handle incoming connection on %s", conn.LocalAddr().String())
+	// 		conn.Close()
+	// 		goto acceptLoop
+	// 	}
+	// }
+
 	if l.HandleRawConnection != nil {
-		ok, err := l.HandleRawConnection(&wrappedConn, hostURL)
+		ok, err := l.HandleRawConnection(&conn, hostURL)
 		if ok && err != nil {
 			// The incoming connection should have been handled, but we received an unexpected error
 			// this is a critical issue and probalby means a bug that needs fixing
@@ -147,7 +166,7 @@ acceptLoop:
 			// We couldn't handle this connection due to an error occurring.
 			// This could be anything; probably due to protocol error or connection instability.
 			// Just bail on this connection and try again
-			log.Error().Err(err).Msgf("failure to handle incoming connection on %s", wrappedConn.LocalAddr().String())
+			log.Error().Err(err).Msgf("failure to handle incoming connection on %s", conn.LocalAddr().String())
 			conn.Close()
 		}
 
@@ -162,10 +181,10 @@ acceptLoop:
 
 	if hostURL.Scheme == "https" {
 		// Upgrade connection to TLS
-		tlsConn, err := upgradeConnection(wrappedConn, l.GetCertificate)
+		tlsConn, err := upgradeConnection(conn, l.GetCertificate)
 		if err != nil {
 			// Failed to upgrade connection
-			wrappedConn.Close()
+			conn.Close()
 			err = &tlsUpgradeError{err: err}
 			return nil, err
 		}
@@ -173,7 +192,7 @@ acceptLoop:
 		return tlsConn, nil
 	}
 
-	return wrappedConn, err
+	return conn, err
 }
 
 // Close closes the listener.
