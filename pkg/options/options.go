@@ -1,10 +1,10 @@
 package options
 
 import (
+	"container/list"
 	"errors"
 	"fmt"
 	"reflect"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -34,37 +34,13 @@ type OptionValue struct {
 	Value interface{}
 }
 
-var splitKeyPathRE = regexp.MustCompile(`^(?:(\w+)|\[([\w\.]+)\])\.?(.*)$`)
+// splitKeyPath splits the path up into its components
+func splitKeyPath(path string) []string {
 
-// splitKeyPath gives us the root key and the remaining subkeys
-func splitKeyPath(path string) (string, string) {
-
-	var key string
-	parts := []string{}
-
-	key = path
-	for {
-		// This looping is needed to flatten possible nested keys:
-		// root[nested.key.here].another.path etc.
-		m := splitKeyPathRE.FindStringSubmatch(key)
-
-		key = m[1]
-		if key == "" {
-			key = m[2]
-		}
-
-		if len(m[3]) == 0 {
-			// No more remaining path, so the key has been flattened by this point
-			break
-		}
-
-		// "fancy" prepend
-		parts = append(parts, "")
-		copy(parts[1:], parts)
-		parts[0] = m[3]
-	}
-
-	return key, strings.Join(parts, ".")
+	path = strings.ReplaceAll(path, "[", ".")
+	path = strings.ReplaceAll(path, "]", ".")
+	parts := strings.Split(path, ".")
+	return parts
 }
 
 func validateTypes(typ reflect.Type, values []interface{}) bool {
@@ -77,7 +53,7 @@ func validateTypes(typ reflect.Type, values []interface{}) bool {
 	return true
 }
 
-func (o *OptionValue) setMap(index, path string, args interface{}) error {
+func (o *OptionValue) setMap(index string) (*OptionValue, error) {
 	var (
 		ok bool
 	)
@@ -88,7 +64,7 @@ func (o *OptionValue) setMap(index, path string, args interface{}) error {
 		o.Value = valueMap
 	} else {
 		if valueMap, ok = o.Value.(map[string]*OptionValue); !ok {
-			return xerrors.Errorf("optionvalue setleaf: existing type: %T: is not map: %w", o.Value, ErrInvalidArgs)
+			return nil, xerrors.Errorf("optionvalue setleaf: existing type: %T: is not map: %w", o.Value, ErrInvalidArgs)
 		}
 	}
 
@@ -98,10 +74,10 @@ func (o *OptionValue) setMap(index, path string, args interface{}) error {
 		valueMap[index] = child
 	}
 
-	return child.set(path, args)
+	return child, nil
 }
 
-func (o *OptionValue) setList(index int, path string, args interface{}) error {
+func (o *OptionValue) setList(index int) (*OptionValue, error) {
 	var (
 		ok bool
 	)
@@ -109,7 +85,7 @@ func (o *OptionValue) setList(index int, path string, args interface{}) error {
 	var valueList []*OptionValue
 	if o.Value != nil {
 		if valueList, ok = o.Value.([]*OptionValue); !ok {
-			return xerrors.Errorf("optionvalue setleaf: existing type: %T: is not list: %w", o.Value, ErrInvalidArgs)
+			return nil, xerrors.Errorf("optionvalue setleaf: existing type: %T: is not list: %w", o.Value, ErrInvalidArgs)
 		}
 	}
 
@@ -126,50 +102,94 @@ func (o *OptionValue) setList(index int, path string, args interface{}) error {
 		child = valueList[index]
 	}
 
-	return child.set(path, args)
+	return child, nil
 }
 
 func (o *OptionValue) setLeaf(args interface{}) error {
 	var (
-	// argsIface interface{}
+	// err error
 	)
 
-	argsIfaceType := reflect.TypeOf(args)
-	argsValue := reflect.ValueOf(args)
-	switch argsIfaceType.Kind() {
-	case reflect.Array, reflect.Slice:
-		// If there's no items, nothing to do
-		if argsValue.Len() == 0 {
-			return nil
-		}
+	if args == nil {
+		return nil // nothing to do
+	}
 
-		// If there's only one item, don't set it as a list, instead just set the single item
-		if argsValue.Len() == 1 {
-			if err := o.set("", argsValue.Index(0).Interface()); err != nil {
-				return xerrors.Errorf("optionvalue setleaf: set: %v failure: %w", argsValue.Index(0).Interface(), err)
+	children := list.New()
+	o.Value = args
+	children.PushBack(o)
+
+	for children.Len() > 0 {
+		element := children.Front()
+		child := element.Value.(*OptionValue)
+		children.Remove(element)
+
+		childType := reflect.TypeOf(child.Value)
+		childValue := reflect.ValueOf(child.Value)
+
+		switch childType.Kind() {
+		case reflect.Array, reflect.Slice:
+			// If there's no items, just set the value to nil, not an empty list
+			if childValue.Len() == 0 {
+				child.Value = nil
+				continue
 			}
 
-			return nil
-		}
+			// If there's only one item, don't set it as a list, instead just set the single item
+			if childValue.Len() == 1 {
+				child.Value = childValue.Index(0).Interface()
+				continue
+			}
 
-		// More than one item, set each in the list with a "key" of its index
-		for i := 0; i < argsValue.Len(); i++ {
-			if err := o.set(strconv.Itoa(i), argsValue.Index(i).Interface()); err != nil {
-				return xerrors.Errorf("optionvalue setleaf: set list: %d: %v failure: %w", i, argsValue.Index(i).Interface(), err)
+			// More than one item, set each in the list
+			newChildrenList := make([]*OptionValue, childValue.Len())
+			for i := 0; i < childValue.Len(); i++ {
+				// Create a new optionvalue with its value set to the value of this list item
+				// this might itself be a map, array or slice, but will be queued for further processing later
+				newChild := &OptionValue{childValue.Index(i).Interface()}
+				newChildrenList[i] = newChild
+				children.PushBack(newChild) // Add this child to processing queue
+			}
+			child.Value = newChildrenList
+		case reflect.Map:
+			var (
+				ok  bool
+				err error
+
+				childrenMap  map[string]*OptionValue
+				currentChild *OptionValue
+			)
+			if childType.Key().Kind() != reflect.String {
+				return xerrors.Errorf("optionvalue setleaf: map keys must be strings: %w", ErrInvalidArgs)
+			}
+
+			// Create a child map if it doesn't exist or can't be cast to a map[string]*OptionValue
+			if childrenMap, ok = child.Value.(map[string]*OptionValue); !ok {
+				childrenMap = map[string]*OptionValue{}
+				child.Value = childrenMap
+			}
+
+			for _, mapKey := range childValue.MapKeys() {
+				mapValue := childValue.MapIndex(mapKey)
+				childKeys := splitKeyPath(mapKey.String())
+
+				if currentChild, ok = childrenMap[childKeys[0]]; !ok {
+					currentChild = &OptionValue{}
+					childrenMap[childKeys[0]] = currentChild
+				}
+
+				if len(childKeys) > 1 {
+					for _, childKey := range childKeys[1:] {
+						// Return existing child or create it if it doesn't exist yet
+						if currentChild, err = currentChild.setMap(childKey); err != nil {
+							return xerrors.Errorf("optionvalue setleaf: failure: %w", err)
+						}
+					}
+				}
+
+				currentChild.Value = mapValue.Interface()
+				children.PushBack(currentChild) // Add this child to processing queue
 			}
 		}
-	case reflect.Map:
-		if argsIfaceType.Key().Kind() != reflect.String {
-			return xerrors.Errorf("optionvalue setleaf: map keys must be strings: %w", ErrInvalidArgs)
-		}
-		for _, mapKey := range argsValue.MapKeys() {
-			mapValue := argsValue.MapIndex(mapKey)
-			if err := o.set(mapKey.String(), mapValue.Interface()); err != nil {
-				return xerrors.Errorf("optionvalue setleaf: set map: %s: %v failure: %w", mapKey.String(), mapValue.Interface(), err)
-			}
-		}
-	default:
-		o.Value = args
 	}
 
 	return nil
@@ -210,18 +230,28 @@ func (o *OptionValue) set(path string, args interface{}) (err error) {
 		return o.setLeaf(args)
 	}
 
-	key, path := splitKeyPath(path)
-
-	if indexVal, err := strconv.Atoi(key); err == nil {
-		// The index is an integer and points to a list
-		return o.setList(indexVal, path, args)
+	current := o
+	keys := splitKeyPath(path)
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		if indexVal, err := strconv.Atoi(key); err == nil {
+			// The index is an integer and points to a list
+			if current, err = current.setList(indexVal); err != nil {
+				return xerrors.Errorf("optionvalue set: failure: %w", err)
+			}
+		} else {
+			if current, err = current.setMap(key); err != nil {
+				return xerrors.Errorf("optionvalue set: failure: %w", err)
+			}
+		}
 	}
 
-	// The index is a string and points to a map
-	return o.setMap(key, path, args)
+	return current.setLeaf(args)
 }
 
-func (o *OptionValue) getMap(key string, path string, def interface{}) *OptionValue {
+func (o *OptionValue) getMap(key string) *OptionValue {
 	var (
 		ok     bool
 		optMap map[string]*OptionValue
@@ -229,39 +259,39 @@ func (o *OptionValue) getMap(key string, path string, def interface{}) *OptionVa
 	)
 
 	if o.Value == nil {
-		return &OptionValue{def}
+		return nil
 	}
 
 	if optMap, ok = o.Value.(map[string]*OptionValue); !ok {
-		return &OptionValue{def}
+		return nil
 	}
 
 	if optVal, ok = optMap[key]; !ok {
-		return &OptionValue{def}
+		return nil
 	}
 
-	return optVal.GetDefault(path, def)
+	return optVal
 }
 
-func (o *OptionValue) getList(index int, path string, def interface{}) *OptionValue {
+func (o *OptionValue) getList(index int) *OptionValue {
 	var (
 		ok      bool
 		optList []*OptionValue
 	)
 
 	if o.Value == nil {
-		return &OptionValue{def}
+		return nil
 	}
 
 	if optList, ok = o.Value.([]*OptionValue); !ok {
-		return &OptionValue{def}
+		return nil
 	}
 
 	if len(optList) <= index {
-		return &OptionValue{def}
+		return nil
 	}
 
-	return optList[index].GetDefault(path, def)
+	return optList[index]
 }
 
 func (o *OptionValue) GetDefault(path string, def interface{}) *OptionValue {
@@ -269,14 +299,29 @@ func (o *OptionValue) GetDefault(path string, def interface{}) *OptionValue {
 		return o
 	}
 
-	key, path := splitKeyPath(path)
+	current := o
+	keys := splitKeyPath(path)
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		if indexVal, err := strconv.Atoi(key); err == nil {
+			// The index CAN be converted to int, so its assumed that its an index whithin a list
+			current = current.getList(indexVal)
+		} else {
+			// The index can't be converted to an int, so its assumed its the key to a map
+			current = current.getMap(key)
+		}
 
-	if indexVal, err := strconv.Atoi(key); err == nil {
-		// The index is an integer and points to a list
-		return o.getList(indexVal, path, def)
+		if current == nil {
+			if def == nil {
+				return nil
+			}
+			return &OptionValue{def}
+		}
 	}
 
-	return o.getMap(key, path, def)
+	return current
 }
 
 func (o *OptionValue) Get(path string) *OptionValue {
@@ -314,7 +359,7 @@ func (o *OptionValue) asMap(targetType reflect.Type, targetVal reflect.Value) bo
 
 	log.Debug().Msgf("target type: %v", targetType)
 
-	XXXXXXX // TODO THIS IS WHERE YOU ARE UPTO
+	// XXXXXXX // TODO THIS IS WHERE YOU ARE UPTO
 
 	//if reflectType.Key().Kind() == reflect.String
 
@@ -331,13 +376,10 @@ func (o *OptionValue) asList(targetType reflect.Type, targetVal reflect.Value) b
 	)
 
 	if optList, ok = o.Value.([]*OptionValue); !ok {
-		if log.Logger.GetLevel() <= zerolog.DebugLevel {
-			// Usually we want to know about this error, but in production, maybe only a log message
-			log.Panic().Msgf("asList: optionvalue type: %T not []*OptionValue", o.Value)
-		} else {
-			log.Error().Msgf("asList: optionvalue type: %T not []*OptionValue", o.Value)
-		}
-		return false
+
+		// Probably we stored the list of one item, just as the item itself. If we want the list back
+		// we'll reconstruct it here
+		optList = []*OptionValue{{o.Value}}
 	}
 
 	if len(optList) == 0 {
@@ -401,7 +443,7 @@ func (o *OptionValue) As(target interface{}) bool {
 		return false
 	}
 
-	if o.Value == nil {
+	if o == nil || o.Value == nil {
 		targetVal.Elem().Set(reflect.Zero(targetVal.Elem().Type()))
 		return true
 	}

@@ -189,12 +189,37 @@ func TestOptionSimpleMap(t *testing.T) {
 }
 
 func TestOptionListAppend(t *testing.T) {
-	// var valList []string
-	// opts.GetDefault("cli.host", nil).As(&valList)
-	// valList = append(valList, s) // Can be a list, provide multiple -h
+	// Create empty optionvalue
+	o := &OptionValue{}
+	var valList []string
+
+	// Test getting an empty list
+	ok := o.GetDefault("cli.host", nil).As(&valList)
+	require.True(t, ok)
+	require.Nil(t, valList)
 
 	// 1. Append to a non found list - implicit creation
+	// Append to list
+	valList = append(valList, "some.host.org")
+	err := o.Set("cli.host", valList)
+	require.Nil(t, err)
+
+	// Check list is correct
+	valList = nil
+	ok = o.GetDefault("cli.host", nil).As(&valList)
+	require.True(t, ok)
+	require.Equal(t, []string{"some.host.org"}, valList)
+
 	// 2. Append to existing list
+	valList = append(valList, "someother.host.org")
+	err = o.Set("cli.host", valList)
+	require.Nil(t, err)
+
+	// Check list is still correct
+	ok = o.GetDefault("cli.host", nil).As(&valList)
+	require.True(t, ok)
+	require.Equal(t, []string{"some.host.org", "someother.host.org"}, valList)
+
 }
 
 func TestOptionAdvancedSetKey(t *testing.T) {
@@ -265,13 +290,15 @@ func TestOptionAdvancedGetList(t *testing.T) {
 	require.True(t, ok)
 
 	// Note the 0 at index 4 - highlights a dummy value filling the empty space when element value 20 was added
-	// the value 0 is not really there, if you get the real value, you'll get nil
+	// the value 0 is not really there, if you attempt to get the real value, the element won't be found
 	require.Equal(t, "[2 4 10 8 0 20]", fmt.Sprintf("%v", value2))
 
+	// Try and get the "missing value" from the list above
 	missingVal := o.GetDefault("4", 99)
-	// Shows entry at index 4 was really created but its value set to nil
-	// if this value were really not there the missing value would be 99
-	require.Nil(t, missingVal)
+	// Shows the entry at index 4 doesn't exist. Internally space was allocated
+	// so element at index 5 could be inserted, but element at index 4's value was never set.
+	require.NotNil(t, missingVal)
+	require.Equal(t, "99", fmt.Sprintf("%v", missingVal))
 }
 
 func TestOptionAdvancedSetMap(t *testing.T) {
@@ -287,6 +314,33 @@ func TestOptionAdvancedSetMap(t *testing.T) {
 	o2 = o.GetDefault("root.subroot.key1", nil)
 	require.NotNil(t, o2)
 	require.Equal(t, "5", fmt.Sprintf("%v", o2.Value))
+}
+
+func TestOptionAvancedSetMap2(t *testing.T) {
+	inp := map[string]interface{}{
+		"key1": []interface{}{
+			1, 2, 3, 4, 5,
+		},
+		"key2": map[string]interface{}{
+			"subkey1": []interface{}{
+				"hello", "world", "goodbye", "cruel", "universe",
+			},
+			"subkey2": []interface{}{
+				"aint", "this", "grand?",
+			},
+			"subkey3": map[string]interface{}{
+				"subsubkey1": 2,
+				"subsubkey2": 4,
+				"subsubkey3": 6,
+			},
+		},
+	}
+
+	o := &OptionValue{}
+	err := o.Set("root", inp)
+	require.Nil(t, err)
+	require.NotNil(t, o.Value)
+	require.Equal(t, "map[root:map[key1:[1 2 3 4 5] key2:map[subkey1:[hello world goodbye cruel universe] subkey2:[aint this grand?] subkey3:map[subsubkey1:2 subsubkey2:4 subsubkey3:6]]]]", fmt.Sprintf("%v", o))
 }
 
 func TestCommandLineArgs(t *testing.T) {
