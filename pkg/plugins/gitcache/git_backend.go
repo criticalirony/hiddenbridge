@@ -9,7 +9,6 @@ import (
 	"hiddenbridge/pkg/utils"
 	"hiddenbridge/pkg/utils/git"
 	"io"
-	"io/fs"
 	"io/ioutil"
 	"net/http"
 	"net/url"
@@ -101,7 +100,7 @@ func hdrsNoCache(w http.ResponseWriter) {
 	w.Header().Add("Cache-Control", "no-cache, max-age=0, must-revalidate")
 }
 
-func sendFile(filePath string, fi fs.FileInfo, content_type string, w http.ResponseWriter, req *http.Request) {
+func sendFile(filePath string, fi os.FileInfo, content_type string, w http.ResponseWriter, req *http.Request) {
 	var (
 		err error
 	)
@@ -237,7 +236,7 @@ func getInfoRefsReq(req *http.Request, reqCtx request.RequestContext, repoCtx *G
 					return xerrors.Errorf("task: git update-server-info failure: %w", err)
 				}
 
-				os.WriteFile(filepath.Join(gitDir, "repoinfo.txt"), []byte(fmt.Sprintf("{\"key\": \"%s\"}\n", repoCtx.key)), os.ModePerm)
+				ioutil.WriteFile(filepath.Join(gitDir, "repoinfo.txt"), []byte(fmt.Sprintf("{\"key\": \"%s\"}\n", repoCtx.key)), os.ModePerm)
 
 				repoCtx.lastUpdated = time.Now()
 				return nil
@@ -256,7 +255,7 @@ func getInfoRefsReq(req *http.Request, reqCtx request.RequestContext, repoCtx *G
 				return xerrors.Errorf("task: git update-server-info failure: %w", err)
 			}
 
-			os.WriteFile(filepath.Join(gitDir, "repoinfo.txt"), []byte(fmt.Sprintf("{\"key\": \"%s\"}", repoCtx.key)), os.ModePerm)
+			ioutil.WriteFile(filepath.Join(gitDir, "repoinfo.txt"), []byte(fmt.Sprintf("{\"key\": \"%s\"}", repoCtx.key)), os.ModePerm)
 
 			repoCtx.lastUpdated = time.Now()
 		}
@@ -356,7 +355,7 @@ func getTextFileResp(w http.ResponseWriter, req *http.Request, reqCtx request.Re
 	var (
 		err      error
 		repoRoot string
-		fi       fs.FileInfo
+		fi       os.FileInfo
 	)
 
 	if !strings.HasPrefix(repoPath, "/") {
